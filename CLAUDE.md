@@ -33,6 +33,34 @@ information that is absent from `.claude/`.
 | [`.claude/06-contracts.md`](.claude/06-contracts.md) | Changing any schema, or an interface with another block |
 | [`.claude/08-open-questions.md`](.claude/08-open-questions.md) | Planning, or when something seems unresolved |
 
+### Planned: per-block segregation
+
+The flat files above are **cross-cutting context** and stay that way. Once other blocks
+land in this repository and integration begins, add a `blocks/` subfolder:
+
+```
+.claude/
+├── 00-…-08-…            cross-cutting context (unchanged)
+└── blocks/
+    ├── p1-desktop.md    shell and review UX
+    ├── p2-ingest.md     geo pipeline, CRS and datum harmonisation
+    ├── p3-detect.md     building extraction, floor estimation
+    ├── p4-cadastre.md   ours — pointer into 03/04/05, not a duplicate
+    ├── p5-viewer.md     Cesium + MapLibre components
+    └── p6-web.md        static export and publish
+```
+
+Each block file records **owner · scope · the interface with us · observed current state ·
+decisions specific to that block**. Create a file the moment a block becomes something we
+interact with, and add it to the table above in the same commit.
+
+> **Record, do not prescribe.** For blocks that are not ours, capture what has been
+> *agreed at the interface* and what is *observably true* — never how we think they should
+> build it. That distinction is why this repository contains only `cadastre/`.
+
+Cross-cutting information stays in the numbered files. A fact that concerns two or more
+blocks does not belong in `blocks/`.
+
 ---
 
 ## Maintenance rules — not optional
@@ -60,10 +88,14 @@ out wrong, write down both the wrong belief and how it was caught. Two examples 
 here: the parent ULPIN being 14 characters and not 16, and `**` being unsupported in
 git `hasconfig` patterns. Those notes stop the same mistake recurring.
 
-**4. Prefer updating an existing file over creating a near-duplicate.** Keep one home per
+**4. Split into `.claude/blocks/` when the repository grows past our block.** See
+*Planned: per-block segregation* above. Until then, per-block files would be speculative,
+so do not create them early.
+
+**5. Prefer updating an existing file over creating a near-duplicate.** Keep one home per
 topic.
 
-**5. Update `README.md` when the derived summary drifts** from `.claude/`.
+**6. Update `README.md` when the derived summary drifts** from `.claude/`.
 
 ---
 
