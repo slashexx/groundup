@@ -54,6 +54,23 @@ Backup of the original global config: `~/.gitconfig.bak-20260829`.
 - The fixture is the primary integration test input; `expected_findings` and
   `must_not_fire` are the assertions.
 
+## Environment
+
+```bash
+python3 -m venv .venv && ./.venv/bin/pip install shapely pytest hypothesis jsonschema
+./.venv/bin/python -m pytest sidecar/cadastre/tests -q
+```
+
+`.venv/` is git-ignored. `pyproject.toml` under `sidecar/cadastre/` holds the real
+dependency list.
+
+## Mutation testing
+
+After changing any rule or threshold, delete the guard it depends on and confirm the
+suite goes red. A rule whose removal keeps the tests green is not being tested. See the
+battery in `05-validation.md` — it has already caught one vacuous negative test and one
+wrong threshold that a fully-passing suite had missed.
+
 ## Regenerating the fixture
 
 ```bash

@@ -36,7 +36,7 @@
       "crs": "EPSG:32643",
       "vertical_datum": "EGM2008",
       "horizontal_accuracy_m": 0.15,
-      "vertical_accuracy_m": 0.25,
+      "vertical_accuracy_m": 0.1,
       "processing_status": "ok"
     },
     {
@@ -48,7 +48,7 @@
       "crs": "EPSG:32643",
       "vertical_datum": "EGM2008",
       "horizontal_accuracy_m": 0.2,
-      "vertical_accuracy_m": 0.3,
+      "vertical_accuracy_m": 0.1,
       "processing_status": "ok"
     },
     {
@@ -60,17 +60,17 @@
       "crs": "EPSG:32643",
       "vertical_datum": "EGM2008",
       "horizontal_accuracy_m": 0.2,
-      "vertical_accuracy_m": 0.3,
+      "vertical_accuracy_m": 0.1,
       "processing_status": "ok"
     },
     {
       "source_id": "SRC-005",
       "source_type": "floorplan",
-      "name": "Approved plan, 1st floor",
+      "name": "Approved plan, 1st floor (heights transformed from local FFL by ingest)",
       "provider": "Municipal building permission",
       "capture_date": "2018-06-20",
       "crs": "EPSG:32643",
-      "vertical_datum": "local:FFL0",
+      "vertical_datum": "EGM2008",
       "horizontal_accuracy_m": 0.05,
       "vertical_accuracy_m": 0.05,
       "processing_status": "ok"
@@ -1085,6 +1085,30 @@
       "to_unit_id": "FLR-001",
       "rel_type": "inside",
       "created_at": "2026-08-29T09:00:00Z"
+    },
+    {
+      "from_unit_id": "PCL-001",
+      "to_unit_id": "UGF-001",
+      "rel_type": "contains",
+      "created_at": "2026-08-29T09:00:00Z"
+    },
+    {
+      "from_unit_id": "UGF-001",
+      "to_unit_id": "PCL-001",
+      "rel_type": "inside",
+      "created_at": "2026-08-29T09:00:00Z"
+    },
+    {
+      "from_unit_id": "PCL-001",
+      "to_unit_id": "ELV-001",
+      "rel_type": "contains",
+      "created_at": "2026-08-29T09:00:00Z"
+    },
+    {
+      "from_unit_id": "ELV-001",
+      "to_unit_id": "PCL-001",
+      "rel_type": "inside",
+      "created_at": "2026-08-29T09:00:00Z"
     }
   ],
   "expected_findings": [
@@ -1138,8 +1162,13 @@
   "must_not_fire": [
     {
       "rule_id": "ESCAPES_PARENT",
+      "unit_id": "ELV-001",
+      "note": "NEGATIVE TEST. Same reasoning as UGF-001: an elevated walkway parented to PCL-001 that runs on past it into the neighbouring parcel."
+    },
+    {
+      "rule_id": "ESCAPES_PARENT",
       "unit_id": "UGF-001",
-      "note": "NEGATIVE TEST. UGF-001 spans PCL-001 and PCL-002 and extends beyond both. It is an easement, not an ownership volume, so leaving the parcel is expected. A validator that flags this has implemented containment as unconditional and is wrong."
+      "note": "NEGATIVE TEST. UGF-001 is parented to PCL-001 yet extends far beyond it. It is an easement, not an ownership volume, so leaving the parcel is expected. A validator that flags this has implemented containment as unconditional and is wrong. The parent link is deliberate: without it the rule short-circuits and this test passes for the wrong reason."
     },
     {
       "rule_id": "GAP_SIBLING",

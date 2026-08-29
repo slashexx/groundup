@@ -6,6 +6,7 @@
 cadastre/
   models.py            dataclasses mirroring the JSON Schemas       [BOTH, day 1]
   store.py             sqlite3 over the .gpkg: six tables           [BOTH, day 1]
+  loader.py            bundle/fixture JSON -> domain objects        [BOTH]
   api.py               FastAPI router                               [shankhanil]
 
   extrude/                                                          [dhruv]
@@ -20,8 +21,10 @@ cadastre/
     lifecycle.py       state machine + guarded transitions
 
   validate/
-    engine.py          orchestrate a run, build STRtree             [dhruv]
+    engine.py          rule registry + run orchestration            [dhruv]
+    context.py         STRtree, containment graph, per-unit accuracy [dhruv]
     tolerance.py       provenance -> tolerance                      [dhruv]
+    rules/_util.py     finding builder, z_overlap, shrink            [dhruv]
     rules/
       geometry.py      invalid, duplicate, impossible z             [dhruv]
       overlap.py       sibling overlap, gap vs parent               [dhruv]

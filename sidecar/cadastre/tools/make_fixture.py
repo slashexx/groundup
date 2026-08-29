@@ -56,17 +56,17 @@ SOURCES = [
      "processing_status": "ok"},
     {"source_id": "SRC-002", "source_type": "footprint", "name": "Drone photogrammetry run 2026-03",
      "provider": "Pilot survey", "capture_date": "2026-03-14", "crs": CRS,
-     "vertical_datum": VDATUM, "horizontal_accuracy_m": 0.15, "vertical_accuracy_m": 0.25,
+     "vertical_datum": VDATUM, "horizontal_accuracy_m": 0.15, "vertical_accuracy_m": 0.10,
      "processing_status": "ok"},
     {"source_id": "SRC-003", "source_type": "dsm", "name": "DSM 0.25m", "provider": "Pilot survey",
      "capture_date": "2026-03-14", "crs": CRS, "vertical_datum": VDATUM,
-     "horizontal_accuracy_m": 0.20, "vertical_accuracy_m": 0.30, "processing_status": "ok"},
+     "horizontal_accuracy_m": 0.20, "vertical_accuracy_m": 0.10, "processing_status": "ok"},
     {"source_id": "SRC-004", "source_type": "dem", "name": "DEM 0.25m", "provider": "Pilot survey",
      "capture_date": "2026-03-14", "crs": CRS, "vertical_datum": VDATUM,
-     "horizontal_accuracy_m": 0.20, "vertical_accuracy_m": 0.30, "processing_status": "ok"},
-    {"source_id": "SRC-005", "source_type": "floorplan", "name": "Approved plan, 1st floor",
+     "horizontal_accuracy_m": 0.20, "vertical_accuracy_m": 0.10, "processing_status": "ok"},
+    {"source_id": "SRC-005", "source_type": "floorplan", "name": "Approved plan, 1st floor (heights transformed from local FFL by ingest)",
      "provider": "Municipal building permission", "capture_date": "2018-06-20", "crs": CRS,
-     "vertical_datum": "local:FFL0", "horizontal_accuracy_m": 0.05, "vertical_accuracy_m": 0.05,
+     "vertical_datum": VDATUM, "horizontal_accuracy_m": 0.05, "vertical_accuracy_m": 0.05,
      "processing_status": "ok"},
     {"source_id": "SRC-006", "source_type": "utility_asbuilt", "name": "Water main as-built",
      "provider": "Water Board", "capture_date": "2011-01-30", "crs": CRS,
@@ -186,6 +186,15 @@ units.append(unit(
     attributes={"easement": True, "utility_kind": "walkway"},
 ))
 
+# Both easements are parented to PCL-001 ON PURPOSE. Without a parent, the containment
+# rule short-circuits before it ever reaches the easement exemption, and the negative
+# test below would pass for the wrong reason - proving nothing. A mutation test caught
+# exactly that. Parented, they extend well beyond PCL-001, so only the easement
+# exemption can keep ESCAPES_PARENT silent.
+for _easement in ("UGF-001", "ELV-001"):
+    relate("PCL-001", _easement, "contains")
+    relate(_easement, "PCL-001", "inside")
+
 # --- what a correct validator must produce ------------------------------------
 OVERLAP_M2 = round((E + 24 - (E + 23.6)) * 18, 2)
 GAP_M = round(FLOORS[6][2] - FLOORS[5][3], 2)
@@ -212,11 +221,15 @@ expected = [
 ]
 
 must_not_fire = [
+    {"rule_id": "ESCAPES_PARENT", "unit_id": "ELV-001",
+     "note": "NEGATIVE TEST. Same reasoning as UGF-001: an elevated walkway parented to "
+             "PCL-001 that runs on past it into the neighbouring parcel."},
     {"rule_id": "ESCAPES_PARENT", "unit_id": "UGF-001",
-     "note": "NEGATIVE TEST. UGF-001 spans PCL-001 and PCL-002 and extends beyond both. "
+     "note": "NEGATIVE TEST. UGF-001 is parented to PCL-001 yet extends far beyond it. "
              "It is an easement, not an ownership volume, so leaving the parcel is "
              "expected. A validator that flags this has implemented containment as "
-             "unconditional and is wrong."},
+             "unconditional and is wrong. The parent link is deliberate: without it the "
+             "rule short-circuits and this test passes for the wrong reason."},
     {"rule_id": "GAP_SIBLING", "unit_id": "FLR-001",
      "note": "NEGATIVE TEST. The three flats tile FLR-001 exactly, so there is no gap. "
              "Other floors have subdivided=false and must not be gap-checked at all."},

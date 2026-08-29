@@ -108,3 +108,51 @@ Negative tests are what stop a validation engine degenerating into "flag everyth
 which is the failure mode that actually kills these systems — not missed errors, but so
 much noise that reviewers stop reading. **Encoding the silence you expect is as much a
 specification as encoding the alarms.**
+
+
+## Thresholds: erode first, then use a negligible area
+
+An earlier implementation allowed `tol_h * perimeter` of leftover area before reporting an
+escape. That is wrong twice over:
+
+- it **double-counts**, because the geometry is already eroded by `tol_h` before the
+  difference is taken, so tolerance has been absorbed once already
+- it **scales with perimeter**, so a 90 m utility corridor was granted a 107 m2 allowance
+  and could escape its parcel by 41 m2 in silence
+
+The rule now is: **absorb tolerance morphologically, then test against
+`negligible_area(tol_h) = tol_h^2`** — the area of a tolerance-sized square, which only
+rejects floating-point residue.
+
+- `escapes_parent` erodes the child by `tol_h`, then differences against the parent
+- `gap_against_parent` **dilates** the union of children by `tol_h`, then differences
+  from the parent — so a seam narrower than measurement error is not a gap
+- `siblings_overlap` erodes both sides and tests intersection as a boolean; no area
+  threshold is involved
+
+## Mutation testing — required, not optional
+
+The fixture went green on the very first run of the engine, which should always be
+treated as suspicious rather than satisfying. A mutation battery found two real defects
+that the passing suite had not:
+
+1. **The `ESCAPES_PARENT` negative test was vacuous.** `UGF-001` had no parent
+   relationship, so `escapes_parent` short-circuited on `pid is None` and never reached
+   the easement exemption. The test asserted silence that came from the wrong cause.
+   Both easements are now deliberately parented to `PCL-001` and extend well beyond it,
+   so only the exemption can keep the rule quiet.
+2. **The perimeter-scaled area threshold above**, which the corrected fixture then
+   exposed.
+
+Battery in use, every one of which must fail the suite:
+
+| Mutation | Catches |
+|---|---|
+| `z_overlap` treats touching as overlapping | every floor stack breaking |
+| gap check ignores the `subdivided` guard | unmodelled interiors reported as gaps |
+| overlap stops exempting easements | utilities reported against every parcel above them |
+| utility check includes `BUILDING` | duplicate findings against aggregates |
+| tolerance replaced by a constant | provenance-derived tolerance silently bypassed |
+
+**A rule whose deletion does not fail a test is not being tested.** Run the battery after
+changing any rule or threshold.
