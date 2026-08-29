@@ -37,8 +37,8 @@ E, N = 445000.0, 1434000.0
 
 GROUND = 912.4
 PLINTH = 0.6
-PARAPET = 1.0
-ROOF_OBSERVED = 935.0
+PARAPET = 0.0        # median estimator finds the slab directly; see .claude/03-design.md
+ROOF_OBSERVED = 934.0
 
 
 def rect(x0: float, y0: float, x1: float, y1: float) -> dict:

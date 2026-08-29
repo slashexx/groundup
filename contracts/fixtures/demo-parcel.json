@@ -6,7 +6,7 @@
     "stratum_below_limit_m": -30.0,
     "stratum_above_limit_m": 150.0,
     "default_plinth_offset_m": 0.6,
-    "default_parapet_deduction_m": 1.0,
+    "default_parapet_deduction_m": 0.0,
     "ulpin_version": "v1",
     "ruleset_version": "r1",
     "min_floor_height_m": 2.4,
@@ -246,9 +246,9 @@
       "recorded_from": "2026-08-29T09:00:00Z",
       "attributes": {
         "ground_level_m": 912.4,
-        "roof_level_m": 935.0,
+        "roof_level_m": 934.0,
         "plinth_offset_m": 0.6,
-        "parapet_deduction_m": 1.0,
+        "parapet_deduction_m": 0.0,
         "floor_count": 8
       },
       "ulpin_provisional": "KA05B012345678-V1-S00-001-Q",

@@ -88,33 +88,62 @@ errors on every utility and flyover in the dataset. Encoded as `UnitType.is_ease
 
 ### Zonal statistics
 
-```
-ground_level = median(DEM inside footprint)
-roof_level   = percentile(DSM inside footprint, 90)
-```
+**Both ground and roof use the median.** Measured against synthetic rasters with planted
+truth (slab 934.0, ground 912.4):
 
-Both choices are deliberate and must not be "simplified" later:
-- **median for ground**, not mean — resists vegetation and DEM edge artefacts
-- **p90 for roof**, not max — max catches antennas, water tanks, lift machine rooms and
-  parapets, inflating every building by 2–4 m
+| estimator | DSM error | DEM error | why it fails |
+|---|---|---|---|
+| mean | +0.15 m | +0.20 m | dragged by outliers |
+| p90 | +0.97 m | +1.09 m | lands on the parapet |
+| max | +6.00 m | +2.52 m | lands on the water tank |
+| **median** | **0.00 m** | **0.00 m** | finds the dominant plane |
+
+A DSM over a flat roof is bimodal: a large slab plane plus a small parapet ring, with
+point features (water tanks, lift machine rooms, antennas) on top. The slab is the
+dominant area for any real building, so the median finds it and rejects everything else
+**regardless of building size**. A DEM has no real observations beneath a roof, so values
+there are interpolated and carry artefacts; the median ignores them.
+
+> **Correction — this reverses an earlier decision.** The original design took the 90th
+> percentile of the DSM and subtracted a `parapet_deduction` constant. Building the
+> synthetic rasters exposed the flaw: the parapet's share of roof area depends on the
+> building's dimensions, so the correct percentile differs for every structure. In the
+> demo building the parapet was 9.5% of roof area, so p90 landed on it only because the
+> water tank pushed the combined fraction past 10%. A slightly larger building would have
+> silently returned the slab and then subtracted a parapet that was never included,
+> producing an answer 1 m low with nothing to indicate it.
+>
+> The median removes both the magic constant and the fragility.
+> `default_parapet_deduction_m` is retained in settings as an escape hatch for sloped
+> roofs and is **0.0** for the median estimator.
 
 ### Floor splitting
 
 ```
-usable       = (roof - parapet_deduction) - (ground + plinth_offset)
+usable       = roof_slab - (ground + plinth_offset)
 floor_height = usable / floor_count
-floor[i]     = [base + i*fh, base + (i+1)*fh]
+floor[i]     = [base + i*height, base + (i+1)*height]
 ```
 
-Two corrections specifically right for Indian construction, both **project parameters,
-not constants**:
-- **plinth_offset** — buildings sit 0.3–1.0 m above surrounding ground, so the ground
-  floor slab is not at DEM level
-- **parapet_deduction** — the DSM roof includes a ~1 m parapet wall; without this every
-  floor comes out systematically short
+**plinth_offset** is specifically right for Indian construction: buildings sit 0.3-1.0 m
+above surrounding ground, so the ground floor slab is not at DEM level. A project
+parameter, not a constant.
 
-Gate: a resulting floor height outside 2.4–5.0 m emits a **Warning**. That band covers
-effectively all residential and commercial construction.
+Floors are computed from a single base rather than accumulated, so rounding drift cannot
+make consecutive floors fail `FLOOR_SEQUENCE`. A 0.1% drift injected as a mutation does
+break the test, which is the point.
+
+Gate: a floor height outside 2.4-5.0 m is **reported, never silently corrected**.
+Validation raises the warning and a human decides - a 5.5 m ground floor is normal for
+retail.
+
+### Refusing to guess
+
+`raster.NoCoverage` is raised, not defaulted, when a footprint has no valid pixels.
+`building.build` leaves `lower_limit`/`upper_limit` as `None` when coverage falls below
+`MIN_COVERAGE = 0.6`, and records `heights_unavailable`. Downstream, `floors.split`
+raises `NotExtrudable` rather than inventing a range. That chain is FR-03 made
+structural rather than aspirational.
 
 ### Apartment subdivision — the honest answer
 

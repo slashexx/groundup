@@ -7,7 +7,7 @@ Live list. Resolve items here and move the outcome into the relevant context fil
 | Question | Notes |
 |---|---|
 | **Official ULPIN format** | Our scheme extends the 14-char parent and carries a version field precisely so this can change. Verify the internal field layout against DoLR's published ULPIN guidelines. |
-| **Pilot city and dataset** | Suggested: a Bengaluru or Pune ward with dense apartment stock **and an operating metro line**, which gives a genuine sub-surface case. Build the pipeline on open foreign LiDAR (AHN, Dublin ALS) because it is clean and classified; demo the registry on the Indian site. |
+| **Pilot city and dataset** — *no longer blocking* | Suggested: a Bengaluru or Pune ward with dense apartment stock **and an operating metro line**, which gives a genuine sub-surface case. Build the pipeline on open foreign LiDAR (AHN, Dublin ALS) because it is clean and classified; demo the registry on the Indian site. **Extrusion is already testable without this**: `tools/make_rasters.py` generates synthetic DEM/DSM with planted ground truth, which is strictly better for testing the algorithm than real data would be. Real data changes only the inputs. |
 | **Accuracy targets** | Do not set a single number. Set a per-source error budget and propagate it into `confidence_score`. Refusing to state one figure is the honest answer and PRD §4.2 already commits us to it. |
 | **Vertical datum and elevation source** | Orthometric via a published geoid model, with a **measured** per-building local offset (tie the plan's 0.000 to a surveyed point). Never assumed. P2 owns this; we consume and cross-check. |
 | **Real or synthetic owner data** | Recommend synthetic parties, real geometry. The role model gets demonstrated without a privacy incident. |

@@ -154,5 +154,16 @@ Battery in use, every one of which must fail the suite:
 | utility check includes `BUILDING` | duplicate findings against aggregates |
 | tolerance replaced by a constant | provenance-derived tolerance silently bypassed |
 
+Extrusion mutations, all of which must also fail:
+
+| Mutation | Catches |
+|---|---|
+| roof median -> p90 | parapet mistaken for the slab |
+| roof median -> max | water tank mistaken for the slab |
+| ground median -> mean | DEM interpolation artefacts |
+| `MIN_COVERAGE` set to 0 | heights invented from a handful of pixels |
+| 0.1% drift in floor base | non-contiguous floors |
+| apartment `lower_limit` shifted | subdivisions escaping their parent |
+
 **A rule whose deletion does not fail a test is not being tested.** Run the battery after
-changing any rule or threshold.
+changing any rule, threshold or estimator.
