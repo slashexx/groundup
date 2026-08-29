@@ -106,6 +106,20 @@ def test_thin_coverage_leaves_heights_unknown_instead_of_guessing(rasters, setti
     assert "heights_unavailable" in b.attributes
 
 
+def test_nonzero_parapet_deduction_is_refused(rasters, settings):
+    """A stale project setting must fail loudly, not lower every floor in silence.
+
+    The ingest contract carried default_parapet_deduction_m = 1.0 from before the roof
+    estimator became a median. Accepting it puts every floor 1 m low and every storey
+    14 cm short - and because all the relative relationships stay consistent, all 13
+    validation rules still pass. That is the worst failure this block can produce.
+    """
+    dem, dsm = rasters
+    settings.default_parapet_deduction_m = 1.0
+    with pytest.raises(bld.EstimatorMismatch, match="median"):
+        bld.build(FOOTPRINT, dem, dsm, settings, ["SRC-003"])
+
+
 # --- floors ------------------------------------------------------------------------
 
 def test_floors_are_contiguous_and_fill_the_building(rasters, settings):

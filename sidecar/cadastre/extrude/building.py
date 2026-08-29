@@ -15,6 +15,20 @@ from . import raster
 MIN_COVERAGE = 0.6
 
 
+class EstimatorMismatch(ValueError):
+    """The project asks for a parapet deduction the roof estimator does not need.
+
+    `raster.roof_level` is a MEDIAN, which finds the dominant roof plane directly - the
+    parapet is already rejected as a minority. Subtracting a deduction on top of that
+    lowers every floor in the building by that amount, and because all the relative
+    relationships stay consistent, every validation rule still passes. Silent, plausible
+    and wrong is the worst failure this block can produce, so it is refused loudly here
+    rather than documented and hoped for.
+
+    The setting is retained for a future percentile-based estimator on sloped roofs.
+    """
+
+
 def build(footprint: BaseGeometry, dem_path: str, dsm_path: str,
           settings: ProjectSettings, source_ids: list[str],
           *, unit_id: str | None = None, floor_count: int | None = None) -> Unit:
@@ -23,6 +37,13 @@ def build(footprint: BaseGeometry, dem_path: str, dsm_path: str,
     Heights are left as None when raster coverage is too thin. That is FR-03: missing
     data is shown as missing, never guessed.
     """
+    if settings.default_parapet_deduction_m:
+        raise EstimatorMismatch(
+            f"default_parapet_deduction_m is {settings.default_parapet_deduction_m}, but "
+            "roof_level uses a median estimator that already returns the roof slab. "
+            "Applying the deduction would lower every floor by that amount with nothing "
+            "reporting it. Set default_parapet_deduction_m to 0.0 in project_settings.")
+
     cover = min(raster.coverage(dem_path, footprint), raster.coverage(dsm_path, footprint))
     attrs: dict = {"raster_coverage": round(cover, 3)}
 
@@ -30,7 +51,7 @@ def build(footprint: BaseGeometry, dem_path: str, dsm_path: str,
         ground = raster.ground_level(dem_path, footprint)
         roof = raster.roof_level(dsm_path, footprint)
         base = ground + settings.default_plinth_offset_m
-        top = roof - settings.default_parapet_deduction_m
+        top = roof
         attrs |= {"ground_level_m": round(ground, 3), "roof_level_m": round(roof, 3),
                   "plinth_offset_m": settings.default_plinth_offset_m}
     else:

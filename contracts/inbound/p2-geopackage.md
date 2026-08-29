@@ -62,6 +62,12 @@ distance maths and must not reproject per operation).
 >
 > If accuracy is genuinely unknown for a source, record a conservative estimate and set
 > `processing_status = 'accuracy_estimated'` — do not leave it NULL.
+>
+> **And do not supply an optimistic default.** A writer defaulting to, say, 0.05 m makes
+> every source silently claim survey-grade accuracy. Tolerances are derived from these
+> numbers, so a too-tight value turns ordinary measurement noise into reported
+> encroachments — the review queue fills with false positives and reviewers learn to
+> dismiss warnings. Under-claiming accuracy is safe; over-claiming is not.
 
 ### `raster` — rasters live as files; this is the registry
 | Column | Type | Req |
@@ -77,12 +83,12 @@ distance maths and must not reproject per operation).
 | Column | Notes |
 |---|---|
 | `project_crs` | e.g. `EPSG:32643` |
-| `vertical_datum` | e.g. `EGM2008` |
+| `vertical_datum` | **exactly `EGM2008`** — a free-text mismatch such as `MSL_EGM2008` raises `DATUM_MISMATCH` on every unit |
 | `stratum_below_limit_m`, `stratum_above_limit_m` | defines a parcel's z-extent, e.g. −30 / +150 |
 | `default_plinth_offset_m` | e.g. 0.6 |
-| `default_parapet_deduction_m` | e.g. 1.0 |
+| `default_parapet_deduction_m` | **0.0.** Was 1.0 in an earlier revision of this contract; that is now wrong. `roof_level` uses a median, which returns the roof slab directly, so a deduction on top lowers every floor by that amount and **every validation rule still passes**. The cadastre block raises `EstimatorMismatch` on any non-zero value rather than accept it. |
 | `ulpin_version` | e.g. `v1` |
-| `ruleset_version` | which validation rule set and severity thresholds apply |
+| `ruleset_version` | which validation rule set and severity thresholds apply. Current: `r1` |
 
 ---
 
