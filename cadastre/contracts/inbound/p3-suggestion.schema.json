@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sih26011/contracts/inbound/p3-suggestion.schema.json",
+  "title": "AI Suggestion (P3 -> P4)",
+  "description": "What P3 hands P4. P4 consumes ONLY suggestions whose review.state is accepted or edited. This enforces FR-05 at the contract level: an AI suggestion never becomes a unit without a human in the loop.",
+  "type": "object",
+  "required": ["suggestion_id", "kind", "geometry", "crs", "source_raster_ids", "confidence", "model", "review"],
+  "additionalProperties": false,
+  "properties": {
+    "suggestion_id": { "type": "string", "format": "uuid" },
+    "kind": { "enum": ["building_outline", "floor_estimate"] },
+    "geometry": {
+      "type": "object",
+      "description": "GeoJSON Polygon in the PROJECT CRS (metres), not WGS84. Deliberate deviation from RFC 7946 so P4 never reprojects per operation."
+    },
+    "crs": { "type": "string", "pattern": "^EPSG:[0-9]+$" },
+    "source_raster_ids": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "model": {
+      "type": "object",
+      "required": ["name", "version", "run_at"],
+      "properties": {
+        "name": { "type": "string", "examples": ["yolov8s-seg-buildings"] },
+        "version": { "type": "string" },
+        "run_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "attributes": {
+      "type": "object",
+      "properties": {
+        "floor_count": { "type": "integer", "minimum": 1 },
+        "floor_count_method": {
+          "enum": ["ndsm_division", "facade_histogram", "manual"],
+          "description": "ndsm_division is a GUESS. It must arrive with low confidence so FR-03 is not violated downstream."
+        },
+        "ground_level_m": { "type": "number" },
+        "roof_level_m": { "type": "number" }
+      }
+    },
+    "review": {
+      "type": "object",
+      "required": ["state"],
+      "properties": {
+        "state": { "enum": ["pending", "accepted", "edited", "rejected"] },
+        "reviewed_by": { "type": ["string", "null"] },
+        "reviewed_at": { "type": ["string", "null"], "format": "date-time" },
+        "edited_geometry": { "type": ["object", "null"], "description": "Present only when state is 'edited'. P4 uses THIS, not `geometry`." }
+      }
+    }
+  }
+}

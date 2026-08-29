@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.venv/
+.uv/
+node_modules/
+dist/
+build/
+.env
+.DS_Store
+*.gpkg
+*.tif
+*.tiff
+*.las
+*.laz
+!data/README.md
+.pytest_cache/
+.ruff_cache/

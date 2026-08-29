@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sih26011/contracts/outbound/finding.schema.json",
+  "title": "Validation Finding",
+  "description": "One error, warning or advisory raised against a unit during a validation run. Owned by P4. Consumed by P1 (review queue) and P5 (map overlay).",
+  "type": "object",
+  "required": ["finding_id", "run_id", "rule_id", "severity", "unit_id", "message", "detected_at"],
+  "additionalProperties": false,
+  "properties": {
+    "finding_id": { "type": "string", "format": "uuid" },
+    "run_id": { "type": "string", "format": "uuid" },
+    "rule_id": {
+      "enum": [
+        "GEOM_INVALID", "GEOM_DUPLICATE", "Z_IMPOSSIBLE",
+        "OVERLAP_SIBLING", "GAP_SIBLING", "ESCAPES_PARENT",
+        "FLOOR_SEQUENCE", "FLOOR_HEIGHT_IMPLAUSIBLE",
+        "UTILITY_CROSSES_BUILDING", "CRS_MISMATCH", "DATUM_MISMATCH",
+        "CONFIDENCE_LOW", "PROVENANCE_MISSING"
+      ]
+    },
+    "severity": {
+      "enum": ["error", "warning", "info"],
+      "description": "error blocks approval; warning requires reviewer acknowledgement; info is advisory."
+    },
+    "unit_id": { "type": "string", "format": "uuid" },
+    "related_unit_ids": { "type": "array", "items": { "type": "string", "format": "uuid" }, "default": [] },
+    "message": { "type": "string" },
+    "suggested_action": { "type": ["string", "null"] },
+    "affected_geometry": {
+      "description": "GeoJSON geometry in the project CRS that P5 draws on the map. NULL for non-spatial findings.",
+      "type": ["object", "null"]
+    },
+    "measured_value": { "type": ["number", "null"], "description": "e.g. overlap area in m2, or floor height in m." },
+    "tolerance": { "type": ["number", "null"], "description": "The provenance-derived threshold this was compared against." },
+    "detected_at": { "type": "string", "format": "date-time" },
+    "acknowledged_by": { "type": ["string", "null"] },
+    "acknowledged_at": { "type": ["string", "null"], "format": "date-time" },
+    "resolved_by": { "type": ["string", "null"] },
+    "resolution_note": { "type": ["string", "null"] }
+  }
+}
