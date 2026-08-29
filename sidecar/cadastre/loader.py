@@ -12,8 +12,18 @@ from pathlib import Path
 from typing import Any
 
 from .models import (
-    Accuracy, CreatedBy, DisputeState, ModelProvenance, ProjectSettings, RelType,
-    Relationship, Representation, Status, Unit, UnitType, ValidationState,
+    Accuracy,
+    CreatedBy,
+    DisputeState,
+    ModelProvenance,
+    ProjectSettings,
+    Relationship,
+    RelType,
+    Representation,
+    Status,
+    Unit,
+    UnitType,
+    ValidationState,
 )
 
 

@@ -10,9 +10,10 @@ findings AND every Warning acknowledged, and its side effect is freezing the ULP
 An approved record is never edited; any change creates a new version.
 """
 
-from __future__ import annotations
+import sqlite3
 
-from ..models import Status
+from ..models import Status, Unit
+from . import ledger
 
 TRANSITIONS: dict[Status, frozenset[Status]] = {
     Status.DRAFT: frozenset({Status.PROCESSING}),
@@ -32,6 +33,30 @@ def can_transition(current: Status, target: Status) -> bool:
     return target in TRANSITIONS[current]
 
 
-def transition(conn, unit_id: str, target: Status, actor: str, comment: str | None = None):
+def transition(
+    conn: sqlite3.Connection,
+    unit: Unit,
+    target: Status | str,
+    actor: str,
+    comment: str | None = None,
+    validation_run=None,
+) -> None:
     """Move a unit to `target`, enforcing the guard and running the side effect."""
-    raise NotImplementedError
+    current = unit.status
+    target_status = Status(target) if isinstance(target, str) else target
+
+    if not can_transition(current, target_status):
+        raise TransitionError(f"Cannot transition from {current.value} to {target_status.value}")
+
+    if target_status == Status.APPROVED:
+        if validation_run is not None and not validation_run.approvable(unit.unit_id):
+            raise TransitionError(
+                f"Unit {unit.unit_id} cannot be approved: unacknowledged warnings or error findings exist."
+            )
+        ledger.freeze(conn, unit)
+    else:
+        cur = conn.cursor()
+        cur.execute("UPDATE unit SET status = ? WHERE unit_id = ?", (target_status.value, unit.unit_id))
+        conn.commit()
+        unit.status = target_status
+

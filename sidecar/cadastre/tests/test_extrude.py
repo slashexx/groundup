@@ -13,13 +13,12 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from shapely.geometry import box
-
 from cadastre import validate
 from cadastre.extrude import building as bld
 from cadastre.extrude import floors as flr
 from cadastre.extrude import raster, subdivide
-from cadastre.models import CreatedBy, ProjectSettings, RelType, Relationship, UnitType
+from cadastre.models import CreatedBy, ProjectSettings, Relationship, RelType, UnitType
+from shapely.geometry import box
 
 REPO = Path(__file__).resolve().parents[3]
 DATA = REPO / "data/synthetic"
@@ -71,7 +70,7 @@ def test_median_beats_every_alternative_estimator(rasters):
     """
     _, dsm = rasters
     v = raster.sample(dsm, FOOTPRINT)
-    err = lambda x: abs(x - SLAB)  # noqa: E731
+    err = lambda x: abs(x - SLAB)
 
     assert err(np.median(v)) < 0.05
     assert err(np.mean(v)) > err(np.median(v))

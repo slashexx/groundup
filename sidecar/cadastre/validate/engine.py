@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from ..models import Finding, ProjectSettings, Relationship, Severity, Unit, ValidationState
 from . import context as ctx_mod
@@ -74,7 +74,7 @@ class ValidationRun:
 def run(units: list[Unit], relationships: list[Relationship],
         sources: dict, settings: ProjectSettings,
         rules: tuple[tuple[str, Rule], ...] = RULES) -> ValidationRun:
-    started = datetime.now(timezone.utc)
+    started = datetime.now(UTC)
     run_id = str(uuid.uuid4())
     ctx = ctx_mod.build(units, relationships, sources, settings)
 
@@ -83,5 +83,5 @@ def run(units: list[Unit], relationships: list[Relationship],
         findings.extend(fn(ctx, run_id))
 
     return ValidationRun(run_id=run_id, started_at=started,
-                         finished_at=datetime.now(timezone.utc),
+                         finished_at=datetime.now(UTC),
                          ruleset_version=settings.ruleset_version, findings=findings)

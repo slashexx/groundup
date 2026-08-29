@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from ...models import Finding, RuleId, Severity
 
@@ -14,7 +14,7 @@ def finding(run_id: str, rule: RuleId, severity: Severity, unit_id: str, message
             action: str | None = None) -> Finding:
     return Finding(
         finding_id=str(uuid.uuid4()), run_id=run_id, rule_id=rule, severity=severity,
-        unit_id=unit_id, message=message, detected_at=datetime.now(timezone.utc),
+        unit_id=unit_id, message=message, detected_at=datetime.now(UTC),
         related_unit_ids=related or [], affected_geometry=geometry,
         measured_value=measured, tolerance=tolerance, suggested_action=action,
     )

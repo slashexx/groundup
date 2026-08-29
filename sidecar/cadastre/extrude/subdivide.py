@@ -15,7 +15,7 @@ downstream ownership claim untraceable.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from shapely.geometry import shape
 from shapely.geometry.base import BaseGeometry
@@ -30,7 +30,7 @@ def from_plan(floor: Unit, plan_geoms: list[BaseGeometry], source_ids: list[str]
     The apartments inherit the floor's z-range exactly, so a subdivision can never
     escape its parent vertically.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     outline = shape(floor.footprint_2d)
     units = []
     for geom in plan_geoms:

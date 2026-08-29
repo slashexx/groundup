@@ -9,12 +9,11 @@ If that is wrong, every overlap, gap and crossing result is wrong with it.
 
 from __future__ import annotations
 
-from hypothesis import given
-from hypothesis import strategies as st
-
 from cadastre.models import Accuracy, CreatedBy, Representation, Status, Unit, UnitType
 from cadastre.validate import tolerance
 from cadastre.validate.rules._util import z_overlap
+from hypothesis import given
+from hypothesis import strategies as st
 
 coords = st.floats(min_value=-500, max_value=500, allow_nan=False, allow_infinity=False)
 tols = st.floats(min_value=0, max_value=5, allow_nan=False, allow_infinity=False)

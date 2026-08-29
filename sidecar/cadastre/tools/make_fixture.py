@@ -17,14 +17,13 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 PKG  = Path(__file__).resolve().parents[1]          # sidecar/cadastre
 REPO = Path(__file__).resolve().parents[3]          # repo root
 sys.path.insert(0, str(PKG.parent))   # sidecar/ on the path
 
-from cadastre.ulpin.encode import Stratum, format_ulpin  # noqa: E402
+from cadastre.ulpin.encode import Stratum, format_ulpin
 
 NOW = "2026-08-29T09:00:00Z"
 CRS = "EPSG:32643"          # UTM 43N - projected, metres

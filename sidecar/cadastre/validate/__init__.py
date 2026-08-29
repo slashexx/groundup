@@ -1,3 +1,3 @@
 from .engine import RULES, ValidationRun, run
 
-__all__ = ["run", "RULES", "ValidationRun"]
+__all__ = ["RULES", "ValidationRun", "run"]

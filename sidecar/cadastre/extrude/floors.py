@@ -16,7 +16,7 @@ roofs and should be 0.0 for the median estimator.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from shapely.geometry import shape
 
@@ -44,7 +44,7 @@ def split(building: Unit, floor_count: int, settings: ProjectSettings,
 
     total = floor_count + basement_count
     height = (building.upper_limit - building.lower_limit) / total
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     geom = shape(building.footprint_2d)
 
     floors = []

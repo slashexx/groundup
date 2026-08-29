@@ -8,8 +8,10 @@ import pytest
 REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO / "sidecar"))
 
-from cadastre import loader  # noqa: E402
-from cadastre import validate  # noqa: E402
+from cadastre import (
+    loader,
+    validate,
+)
 
 FIXTURE = REPO / "contracts/fixtures/demo-parcel.json"
 

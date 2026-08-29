@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from shapely.geometry.base import BaseGeometry
 
@@ -73,6 +73,6 @@ def build(footprint: BaseGeometry, dem_path: str, dsm_path: str,
         representation=Representation.PRISM,
         lower_limit=base,
         upper_limit=top,
-        recorded_from=datetime.now(timezone.utc),
+        recorded_from=datetime.now(UTC),
         attributes=attrs,
     )

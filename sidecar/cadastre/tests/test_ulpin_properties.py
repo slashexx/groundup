@@ -5,12 +5,17 @@ Example-based tests confirm the cases we thought of. These confirm the cases we 
 
 from __future__ import annotations
 
+from cadastre.ulpin.encode import (
+    ALPHABET,
+    Stratum,
+    check_char,
+    format_ulpin,
+    parse_ulpin,
+    to_urn,
+    verify,
+)
 from hypothesis import given, settings
 from hypothesis import strategies as st
-
-from cadastre.ulpin.encode import (
-    ALPHABET, Stratum, check_char, format_ulpin, parse_ulpin, to_urn, verify,
-)
 
 parents = st.text(alphabet=ALPHABET, min_size=14, max_size=14)
 versions = st.integers(min_value=1, max_value=99)

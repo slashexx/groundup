@@ -12,7 +12,7 @@ from shapely import STRtree
 from shapely.geometry import shape
 from shapely.geometry.base import BaseGeometry
 
-from ..models import Accuracy, ProjectSettings, RelType, Relationship, Unit
+from ..models import Accuracy, ProjectSettings, Relationship, RelType, Unit
 
 #: Used when a unit's sources declare no accuracy. Deliberately large: with provenance
 #: unknown we must not manufacture a confident tolerance. PROVENANCE_MISSING is raised
