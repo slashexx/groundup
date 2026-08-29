@@ -3,34 +3,33 @@
  *
  * Architecture:
  *   App (shared state owner)
- *    ├── SearchFilter  – search ULPIN, type chips, status chips
- *    ├── Map2D         – MapLibre 2D/2.5D polygon viewer  ← PRIMARY CONTRIBUTION
- *    ├── Viewer3D      – Cesium extruded 3D viewer (consumer of same state)
+ *    ├── SearchFilter  – search ULPIN, type/status chips (thin wrapper → MapLibre setFilter)
+ *    ├── Map2D         – MapLibre GL JS 2D/2.5D viewer  ← PRIMARY CONTRIBUTION
+ *    ├── Viewer3D      – Cesium extruded 3D viewer (unchanged)
  *    └── DetailsPanel  – data-driven inspection panel
  *
  * All data comes from src/data/units.geojson (13 authoritative features).
- * No fabricated records, findings, hierarchy, or API calls.
  */
 import React, { useState, useEffect } from 'react';
 import rawUnitsData from './data/units.geojson';
-import type { UnitFeature, FilterState } from './types/viewer';
-import { Map2D }        from './components/Map2D/Map2D';
-import { Viewer3D }     from './components/Viewer3D/Viewer3D';
+import type { UnitFeature, FilterState, MapViewMode } from './types/viewer';
+import { Map2D } from './components/Map2D/Map2D';
+import { Viewer3D } from './components/Viewer3D/Viewer3D';
 import { DetailsPanel } from './components/DetailsPanel/DetailsPanel';
 import { SearchFilter } from './components/SearchFilter/SearchFilter';
 import { ALL_TYPES, ALL_STATUSES, STATUS_COLORS } from './utils/viewerUtils';
 import './App.css';
 
-const MIN_SLICE = -10;  // allows underground units (min base_height = -8)
-const MAX_SLICE =  13;  // top of tallest building floor
+const MIN_SLICE = -10;
+const MAX_SLICE = 13;
 
 export const App: React.FC = () => {
-  // ── Units data — loaded from bundled GeoJSON, with offline fetch fallback ──
   const [units, setUnits] = useState<UnitFeature[]>(
-    Array.isArray(rawUnitsData?.features) ? (rawUnitsData.features as UnitFeature[]) : []
+    Array.isArray(rawUnitsData?.features)
+      ? (rawUnitsData.features as UnitFeature[])
+      : []
   );
 
-  // Offline fallback — fetch from public/data/pilot-area.geojson if bundled import failed
   useEffect(() => {
     if (units.length === 0) {
       fetch('/data/pilot-area.geojson')
@@ -46,31 +45,27 @@ export const App: React.FC = () => {
     }
   }, [units.length]);
 
-  // ── Shared selection state ─────────────────────────────────────────────────
   const [selectedUlpin, setSelectedUlpin] = useState<string | null>(null);
 
-  // ── Shared filter state — all types/statuses active by default ────────────
   const [filter, setFilter] = useState<FilterState>({
-    types:    [...ALL_TYPES],    // parcel, building, floor, apartment, underground
-    statuses: [...ALL_STATUSES], // draft, checked, approved, error
-    query:    '',
+    types: [...ALL_TYPES],
+    statuses: [...ALL_STATUSES],
   });
 
-  // ── Floor slice controls ───────────────────────────────────────────────────
-  const [sliceEnabled, setSliceEnabled] = useState(false);
-  const [sliceHeight,  setSliceHeight]  = useState(MAX_SLICE);
+  const [mapViewMode, setMapViewMode] = useState<MapViewMode>('2d');
 
-  // ── Underground visibility ─────────────────────────────────────────────────
-  // When false: B01-B1 and UTIL-01 are hidden in both Map2D and Viewer3D
+  const [sliceEnabled, setSliceEnabled] = useState(false);
+  const [sliceHeight, setSliceHeight] = useState(MAX_SLICE);
   const [showUnderground, setShowUnderground] = useState(false);
 
   return (
     <div className="app">
-      {/* ── Header ── */}
       <header className="app-header">
         <div className="app-title">
-          <h1>3D ULPIN · Pilot Area Viewer</h1>
-          <span>P5 Integration · Bengaluru Pilot · 13 features · Fully offline</span>
+          <h1>ULPIN · Pilot Area Viewer</h1>
+          <span>
+            P5 Integration · Bengaluru Pilot · {units.length} features · MapLibre + Cesium
+          </span>
         </div>
         <SearchFilter
           units={units}
@@ -80,21 +75,18 @@ export const App: React.FC = () => {
         />
       </header>
 
-      {/* ── Main 3-pane grid ── */}
       <main className="app-main">
-        {/* 2D MapLibre pane — PRIMARY P5 CONTRIBUTION */}
-        <div className="pane">
-          <div className="pane-label">2D · MapLibre</div>
+        <div className="pane pane-map2d">
           <Map2D
             units={units}
             selectedUlpin={selectedUlpin}
             filter={filter}
             showUnderground={showUnderground}
+            viewMode={mapViewMode}
             onSelect={setSelectedUlpin}
           />
         </div>
 
-        {/* 3D Cesium pane — consumes identical shared state */}
         <div className="pane">
           <div className="pane-label">3D · Cesium</div>
           <Viewer3D
@@ -107,7 +99,6 @@ export const App: React.FC = () => {
           />
         </div>
 
-        {/* Details inspection panel */}
         <DetailsPanel
           units={units}
           selectedUlpin={selectedUlpin}
@@ -115,14 +106,30 @@ export const App: React.FC = () => {
         />
       </main>
 
-      {/* ── Footer controls ── */}
       <footer className="app-footer">
-        {/* Floor slice slider — filters by base_height in both viewers */}
+        <div className="map-mode-toggle" role="group" aria-label="Map view mode">
+          <span className="ctl-label">Map view</span>
+          <button
+            type="button"
+            className={`mode-btn ${mapViewMode === '2d' ? 'active' : ''}`}
+            onClick={() => setMapViewMode('2d')}
+          >
+            2D
+          </button>
+          <button
+            type="button"
+            className={`mode-btn ${mapViewMode === '2.5d' ? 'active' : ''}`}
+            onClick={() => setMapViewMode('2.5d')}
+          >
+            2.5D
+          </button>
+        </div>
+
         <label className="ctl">
           <input
             type="checkbox"
             checked={sliceEnabled}
-            onChange={(e) => setSliceEnabled(e.target.checked)}
+            onChange={(event) => setSliceEnabled(event.target.checked)}
           />
           Floor slice
         </label>
@@ -134,24 +141,22 @@ export const App: React.FC = () => {
           step={0.5}
           value={sliceHeight}
           disabled={!sliceEnabled}
-          onChange={(e) => setSliceHeight(Number(e.target.value))}
+          onChange={(event) => setSliceHeight(Number(event.target.value))}
           aria-label="Slice height in metres"
         />
         <span className="ctl-value">
           {sliceEnabled ? `${sliceHeight.toFixed(1)} m` : '—'}
         </span>
 
-        {/* Underground toggle — shows B01-B1 and UTIL-01 in both viewers */}
         <label className="ctl">
           <input
             type="checkbox"
             checked={showUnderground}
-            onChange={(e) => setShowUnderground(e.target.checked)}
+            onChange={(event) => setShowUnderground(event.target.checked)}
           />
           Underground view
         </label>
 
-        {/* Status legend */}
         <div className="legend">
           {Object.entries(STATUS_COLORS).map(([status, color]) => (
             <span key={status} className="legend-item">

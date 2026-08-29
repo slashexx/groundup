@@ -1,0 +1,153 @@
+.map2d-root {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: #dce3e8;
+}
+
+.map2d-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.map2d-canvas .maplibregl-map,
+.map2d-canvas .maplibregl-canvas-container,
+.map2d-canvas .maplibregl-canvas {
+  width: 100%;
+  height: 100%;
+}
+
+.map2d-info {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 10;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #1c2321;
+  border: 1px solid #dfe3de;
+  border-radius: 8px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  box-shadow: 0 2px 10px rgba(28, 35, 33, 0.08);
+}
+
+.map2d-info-title {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #5b6663;
+  margin-bottom: 2px;
+}
+
+.map2d-basemap-warn {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 11;
+  padding: 5px 10px;
+  background: rgba(255, 251, 235, 0.95);
+  border: 1px solid #f0d9a8;
+  border-radius: 6px;
+  color: #7a4a06;
+  font-size: 11.5px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.map2d-legend {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 10;
+  min-width: 132px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #1c2321;
+  border: 1px solid #dfe3de;
+  border-radius: 8px;
+  font-size: 12px;
+  box-shadow: 0 2px 10px rgba(28, 35, 33, 0.08);
+}
+
+.map2d-legend .legend-title {
+  margin-bottom: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: #9aa39e;
+}
+
+.map2d-legend .legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 5px 0;
+  text-transform: capitalize;
+}
+
+.map2d-legend .legend-dot {
+  width: 10px;
+  height: 10px;
+  display: inline-block;
+  border-radius: 3px;
+  border: 1px solid rgba(28, 35, 33, 0.12);
+}
+
+.map2d-legend .legend-dot.approved {
+  background: #0d6b58;
+}
+
+.map2d-legend .legend-dot.checked {
+  background: #c9a227;
+}
+
+.map2d-legend .legend-dot.draft {
+  background: #c9a227;
+}
+
+.map2d-legend .legend-dot.error {
+  background: #b3402a;
+}
+
+.map2d-toolbar {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  z-index: 10;
+}
+
+.map2d-toolbar button {
+  border: 1px solid #c9cec8;
+  border-radius: 7px;
+  padding: 7px 12px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #1c2321;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(28, 35, 33, 0.08);
+}
+
+.map2d-toolbar button:hover {
+  border-color: #0d6b58;
+  color: #0d6b58;
+}
+
+.map2d-root .maplibregl-ctrl-top-right {
+  top: 10px;
+  right: 10px;
+}
+
+.map2d-root .maplibregl-ctrl-group {
+  overflow: hidden;
+  border: 1px solid #c9cec8;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 2px 8px rgba(28, 35, 33, 0.1);
+}

@@ -57,11 +57,14 @@ export interface FilterCriteria {
 
 export type FilterState = FilterCriteria;
 
+export type MapViewMode = '2d' | '2.5d';
+
 export interface Map2DProps {
   units: UnitFeature[];
   selectedUlpin: string | null;
   filter: FilterState;
   showUnderground: boolean;
+  viewMode: MapViewMode;
   onSelect: (ulpin: string | null) => void;
   className?: string;
 }

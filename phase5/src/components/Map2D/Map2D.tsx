@@ -1,109 +1,49 @@
-/**
- * Map2D.tsx — MapLibre GL 2D/2.5D ULPIN viewer
- *
- * Fix for blank map: GeoJSON data is loaded directly in the map 'load' event
- * handler using the units ref (not via a separate effect), eliminating the
- * timing gap between empty source init and setData call.
- *
- * Key implementation decisions:
- * - Source is added imperatively in 'load', not in the style spec
- * - promoteId:'ulpin' so feature-state works with string IDs
- * - All layers added after source in 'load'
- * - fitBounds computed from actual GeoJSON coordinates on first load
- * - showUnderground + filter → setFilter on all layers
- * - selectedUlpin → setFeatureState({ selected: true })
- * - hover → setFeatureState({ hover: true })
- * - fill-extrusion uses base_height / top_height from properties
- */
-import React, { useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import * as maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import type { Map2DProps, UnitFeature, FilterState } from '../../types/viewer';
+import type { Map2DProps, FilterState, UnitFeature } from '../../types/viewer';
+import { STATUS_COLOR, STATUS_COLORS, computeBounds, buildMapFilter } from '../../utils/viewerUtils';
 import {
-  BG_COLOR,
-  PARCEL_COLOR,
-  UNDERGROUND_COLOR,
-  LINE_COLOR,
-  SELECTED_COLOR,
-  STATUS_COLORS,
-} from '../../utils/viewerUtils';
+  BASEMAP_RASTER_SOURCE_ID,
+  createBlueprintStyle,
+  getCartoKey,
+  resolveInitialStyle,
+} from '../../utils/basemapStyle';
+import './Map2D.css';
 
-// ── Stable IDs ────────────────────────────────────────────────────────────────
-const SOURCE_ID        = 'units';
-const FILL_LAYER_ID    = 'units-fill';
-const EXTRUDE_LAYER_ID = 'units-extrusion';
-const LINE_LAYER_ID    = 'units-line';
+export const SOURCE_ID = 'units';
+export const FILL_LAYER_ID = 'units-fill';
+export const OUTLINE_LAYER_ID = 'units-outline';
+export const EXTRUDE_LAYER_ID = 'units-3d';
 
-// ── MapLibre color expressions ────────────────────────────────────────────────
-const FILL_COLOR_EXPR: maplibregl.ExpressionSpecification = [
-  'case',
-  ['==', ['get', 'unit_type'], 'parcel'],      PARCEL_COLOR,
-  ['==', ['get', 'unit_type'], 'underground'], UNDERGROUND_COLOR,
-  ['match', ['get', 'status'],
-    'draft',    STATUS_COLORS.draft,
-    'checked',  STATUS_COLORS.checked,
-    'approved', STATUS_COLORS.approved,
-    'error',    STATUS_COLORS.error,
-    '#999999',
-  ],
-];
+const UNIT_LAYERS = [FILL_LAYER_ID, OUTLINE_LAYER_ID, EXTRUDE_LAYER_ID] as const;
 
-// ── Bounding-box helper ───────────────────────────────────────────────────────
-function computeBounds(features: UnitFeature[]): maplibregl.LngLatBoundsLike | null {
-  if (!features.length) return null;
-  let minLng = Infinity, maxLng = -Infinity;
-  let minLat = Infinity, maxLat = -Infinity;
-
-  for (const f of features) {
-    if (f.geometry?.type !== 'Polygon') continue;
-    const rings = f.geometry.coordinates as number[][][];
-    for (const ring of rings) {
-      for (const [lng, lat] of ring) {
-        if (lng < minLng) minLng = lng;
-        if (lng > maxLng) maxLng = lng;
-        if (lat < minLat) minLat = lat;
-        if (lat > maxLat) maxLat = lat;
-      }
-    }
-  }
-  if (!isFinite(minLng)) return null;
-  return [[minLng, minLat], [maxLng, maxLat]];
-}
-
-// ── Filter expression ─────────────────────────────────────────────────────────
-function buildFilter(
-  filter: FilterState,
-  showUnderground: boolean
-): maplibregl.ExpressionSpecification {
-  const conds: unknown[] = [true];
-
-  if (filter.types && filter.types.length > 0) {
-    conds.push(['in', ['get', 'unit_type'], ['literal', filter.types]]);
-  }
-  if (filter.statuses && filter.statuses.length > 0) {
-    conds.push(['in', ['get', 'status'], ['literal', filter.statuses]]);
-  }
-  if (filter.query?.trim()) {
-    // substring match (case-folded by uppercasing both sides)
-    conds.push(['in', filter.query.trim().toUpperCase(), ['upcase', ['get', 'ulpin']]]);
-  }
-  if (!showUnderground) {
-    conds.push(['!=', ['get', 'unit_type'], 'underground']);
-  }
-
-  return ['all', ...conds] as unknown as maplibregl.ExpressionSpecification;
-}
-
-// ── Apply helpers (called from effects, keeping them outside component) ────────
 function applyFilter(
   map: maplibregl.Map,
   filter: FilterState,
   showUnderground: boolean
 ) {
-  const expr = buildFilter(filter, showUnderground);
-  for (const id of [FILL_LAYER_ID, EXTRUDE_LAYER_ID, LINE_LAYER_ID]) {
-    if (map.getLayer(id)) map.setFilter(id, expr);
+  const expression = buildMapFilter(filter, showUnderground);
+  for (const layerId of UNIT_LAYERS) {
+    if (map.getLayer(layerId)) {
+      map.setFilter(layerId, expression);
+    }
   }
+}
+
+function applyViewMode(map: maplibregl.Map, viewMode: Map2DProps['viewMode']) {
+  const is25d = viewMode === '2.5d';
+  if (map.getLayer(EXTRUDE_LAYER_ID)) {
+    map.setLayoutProperty(EXTRUDE_LAYER_ID, 'visibility', is25d ? 'visible' : 'none');
+  }
+  if (map.getLayer(FILL_LAYER_ID)) {
+    map.setLayoutProperty(FILL_LAYER_ID, 'visibility', 'visible');
+  }
+  map.easeTo({
+    pitch: is25d ? 55 : 0,
+    bearing: is25d ? -18 : 0,
+    duration: 400,
+  });
 }
 
 function applySelection(
@@ -113,245 +53,357 @@ function applySelection(
   didClickRef: React.MutableRefObject<string | null>
 ) {
   map.removeFeatureState({ source: SOURCE_ID });
-  if (!ulpin) return;
+  if (!ulpin) {
+    didClickRef.current = null;
+    return;
+  }
 
   map.setFeatureState({ source: SOURCE_ID, id: ulpin }, { selected: true });
 
-  // flyTo only when selection came from outside this map (search/Cesium/hierarchy)
   if (didClickRef.current !== ulpin) {
-    const feat = units.find(
-      (u) => u.properties.ulpin === ulpin || u.id === ulpin
+    const feature = units.find(
+      (unit) =>
+        String(unit.properties?.ulpin) === String(ulpin) || String(unit.id) === String(ulpin)
     );
-    if (feat) {
-      const bounds = computeBounds([feat]);
+    if (feature) {
+      const bounds = computeBounds([feature]);
       if (bounds) {
-        map.fitBounds(bounds, { padding: 100, duration: 700, maxZoom: 19 });
+        map.fitBounds(bounds, { padding: 80, duration: 600, maxZoom: 19 });
       }
     }
   }
   didClickRef.current = null;
 }
 
-// ── Component ─────────────────────────────────────────────────────────────────
+function setHoverState(
+  map: maplibregl.Map,
+  hoveredIdRef: React.MutableRefObject<string | null>,
+  nextId: string | null
+) {
+  const previousId = hoveredIdRef.current;
+  if (previousId && previousId !== nextId) {
+    map.setFeatureState({ source: SOURCE_ID, id: previousId }, { hover: false });
+  }
+  if (nextId) {
+    map.setFeatureState({ source: SOURCE_ID, id: nextId }, { hover: true });
+  }
+  hoveredIdRef.current = nextId;
+  map.getCanvas().style.cursor = nextId ? 'pointer' : '';
+}
+
+function firstSymbolLayerId(map: maplibregl.Map): string | undefined {
+  const layers = map.getStyle().layers ?? [];
+  return layers.find((layer) => layer.type === 'symbol')?.id;
+}
+
+function addUnitsSourceAndLayers(
+  map: maplibregl.Map,
+  units: UnitFeature[],
+  filter: FilterState,
+  showUnderground: boolean,
+  viewMode: Map2DProps['viewMode']
+) {
+  if (map.getSource(SOURCE_ID)) {
+    const source = map.getSource(SOURCE_ID) as maplibregl.GeoJSONSource;
+    source.setData({ type: 'FeatureCollection', features: units });
+    return;
+  }
+
+  map.addSource(SOURCE_ID, {
+    type: 'geojson',
+    data: { type: 'FeatureCollection', features: units },
+    promoteId: 'ulpin',
+  });
+
+  const beforeId = firstSymbolLayerId(map);
+
+  map.addLayer(
+    {
+      id: FILL_LAYER_ID,
+      type: 'fill',
+      source: SOURCE_ID,
+      paint: {
+        'fill-color': STATUS_COLOR,
+        'fill-opacity': [
+          'case',
+          ['boolean', ['feature-state', 'selected'], false],
+          0.62,
+          ['boolean', ['feature-state', 'hover'], false],
+          0.5,
+          0.32,
+        ],
+      },
+    },
+    beforeId
+  );
+
+  map.addLayer(
+    {
+      id: OUTLINE_LAYER_ID,
+      type: 'line',
+      source: SOURCE_ID,
+      paint: {
+        'line-color': [
+          'case',
+          ['boolean', ['feature-state', 'selected'], false],
+          '#0d6b58',
+          ['boolean', ['feature-state', 'hover'], false],
+          '#1c2321',
+          '#334155',
+        ],
+        'line-width': [
+          'case',
+          ['boolean', ['feature-state', 'selected'], false],
+          3,
+          ['boolean', ['feature-state', 'hover'], false],
+          2.2,
+          1.2,
+        ],
+        'line-opacity': 0.95,
+      },
+    },
+    beforeId
+  );
+
+  map.addLayer(
+    {
+      id: EXTRUDE_LAYER_ID,
+      type: 'fill-extrusion',
+      source: SOURCE_ID,
+      layout: {
+        visibility: viewMode === '2.5d' ? 'visible' : 'none',
+      },
+      paint: {
+        'fill-extrusion-base': ['coalesce', ['get', 'base_height'], 0],
+        'fill-extrusion-height': ['coalesce', ['get', 'top_height'], 0],
+        'fill-extrusion-color': [
+          'case',
+          ['==', ['get', 'unit_type'], 'underground'],
+          '#5b6663',
+          STATUS_COLOR,
+        ],
+        'fill-extrusion-opacity': 0.82,
+      },
+    },
+    beforeId
+  );
+
+  applyFilter(map, filter, showUnderground);
+  applyViewMode(map, viewMode);
+}
+
 export const Map2D: React.FC<Map2DProps> = ({
   units,
   selectedUlpin,
   filter,
   showUnderground,
+  viewMode,
   onSelect,
+  className,
 }) => {
-  const containerRef    = useRef<HTMLDivElement | null>(null);
-  const mapRef          = useRef<maplibregl.Map | null>(null);
-  const mapReadyRef     = useRef(false);  // true once map 'load' has fired
-  const hoveredIdRef    = useRef<string | null>(null);
-  const didClickRef     = useRef<string | null>(null);
-  const onSelectRef     = useRef(onSelect);
-  // Keep latest props in refs so the load-event closure sees current values
-  const unitsRef           = useRef(units);
-  const filterRef          = useRef(filter);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const mapRef = useRef<maplibregl.Map | null>(null);
+  const mapReadyRef = useRef(false);
+  const hoveredIdRef = useRef<string | null>(null);
+  const didClickRef = useRef<string | null>(null);
+  const unitsRef = useRef(units);
+  const filterRef = useRef(filter);
   const showUndergroundRef = useRef(showUnderground);
-  const selectedUlpinRef   = useRef(selectedUlpin);
+  const selectedUlpinRef = useRef(selectedUlpin);
+  const viewModeRef = useRef(viewMode);
+  const onSelectRef = useRef(onSelect);
+  const blueprintAppliedRef = useRef(false);
 
-  useEffect(() => { onSelectRef.current     = onSelect;       }, [onSelect]);
-  useEffect(() => { unitsRef.current        = units;          }, [units]);
-  useEffect(() => { filterRef.current       = filter;         }, [filter]);
-  useEffect(() => { showUndergroundRef.current = showUnderground; }, [showUnderground]);
-  useEffect(() => { selectedUlpinRef.current   = selectedUlpin;  }, [selectedUlpin]);
+  const [basemapUnavailable, setBasemapUnavailable] = useState(false);
 
-  // ── Mount: create map, add source+layers in 'load' ───────────────────────
   useEffect(() => {
-    if (!containerRef.current) return;
+    unitsRef.current = units;
+  }, [units]);
+  useEffect(() => {
+    filterRef.current = filter;
+  }, [filter]);
+  useEffect(() => {
+    showUndergroundRef.current = showUnderground;
+  }, [showUnderground]);
+  useEffect(() => {
+    selectedUlpinRef.current = selectedUlpin;
+  }, [selectedUlpin]);
+  useEffect(() => {
+    viewModeRef.current = viewMode;
+  }, [viewMode]);
+  useEffect(() => {
+    onSelectRef.current = onSelect;
+  }, [onSelect]);
+
+  const fitToData = useCallback(() => {
+    const map = mapRef.current;
+    if (!map || !mapReadyRef.current) return;
+    const bounds = computeBounds(unitsRef.current);
+    if (!bounds) return;
+    map.fitBounds(bounds, { padding: 72, duration: 600, maxZoom: 19 });
+  }, []);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || mapRef.current) return;
+
+    const initialBounds = computeBounds(unitsRef.current);
+    const cartoKey = getCartoKey();
+    if (!cartoKey) {
+      setBasemapUnavailable(true);
+    }
 
     const map = new maplibregl.Map({
-      container: containerRef.current,
-      style: {
-        version: 8,
-        sources: {},
-        layers: [
-          {
-            id: 'background',
-            type: 'background',
-            paint: { 'background-color': BG_COLOR },
-          },
-        ],
-      },
-      center:  [77.594, 12.9713],
-      zoom:    16.5,
-      pitch:   30,
-      bearing: -10,
-      attributionControl: false,
+      container,
+      style: resolveInitialStyle(),
+      ...(initialBounds ? { bounds: initialBounds, fitBoundsOptions: { padding: 72, maxZoom: 18 } } : {}),
+      pitch: 0,
+      bearing: 0,
+      attributionControl: { compact: true },
     });
 
-    map.addControl(new maplibregl.NavigationControl(), 'top-right');
+    mapRef.current = map;
 
-    map.on('load', () => {
-      // ── Add source imperatively after load ──────────────────────────────
-      map.addSource(SOURCE_ID, {
-        type: 'geojson',
-        data: {
-          type: 'FeatureCollection',
-          // Load current units immediately — no blank intermediate state
-          features: unitsRef.current,
-        },
-        promoteId: 'ulpin',  // use ulpin property as feature id for feature-state
-      });
+    map.addControl(
+      new maplibregl.NavigationControl({ showCompass: true, visualizePitch: true }),
+      'top-right'
+    );
 
-      // ── Fill layer: 2D footprints ───────────────────────────────────────
-      map.addLayer({
-        id: FILL_LAYER_ID,
-        type: 'fill',
-        source: SOURCE_ID,
-        paint: {
-          'fill-color': FILL_COLOR_EXPR,
-          'fill-opacity': [
-            'case',
-            ['==', ['get', 'unit_type'], 'parcel'],     0.22,
-            ['boolean', ['feature-state', 'selected'], false], 0.92,
-            ['boolean', ['feature-state', 'hover'],    false], 0.82,
-            0.60,
-          ],
-        },
-      });
+    const resizeObserver = new ResizeObserver(() => {
+      map.resize();
+    });
+    resizeObserver.observe(container);
 
-      // ── Extrusion layer: vertical extent via base_height/top_height ─────
-      map.addLayer({
-        id: EXTRUDE_LAYER_ID,
-        type: 'fill-extrusion',
-        source: SOURCE_ID,
-        paint: {
-          'fill-extrusion-color': FILL_COLOR_EXPR,
-          // base: use actual base_height (can be negative for underground)
-          'fill-extrusion-base': ['get', 'base_height'],
-          // height: top_height (absolute, not relative — MapLibre uses abs top)
-          'fill-extrusion-height': ['get', 'top_height'],
-          'fill-extrusion-opacity': [
-            'case',
-            ['==', ['get', 'unit_type'], 'parcel'],     0.0,
-            ['boolean', ['feature-state', 'selected'], false], 0.95,
-            ['boolean', ['feature-state', 'hover'],    false], 0.75,
-            0.60,
-          ],
-          'fill-extrusion-vertical-gradient': true,
-        },
-      });
+    map.on('style.load', () => {
+      addUnitsSourceAndLayers(
+        map,
+        unitsRef.current,
+        filterRef.current,
+        showUndergroundRef.current,
+        viewModeRef.current
+      );
 
-      // ── Line layer: outlines ────────────────────────────────────────────
-      map.addLayer({
-        id: LINE_LAYER_ID,
-        type: 'line',
-        source: SOURCE_ID,
-        paint: {
-          'line-color': [
-            'case',
-            ['boolean', ['feature-state', 'selected'], false], SELECTED_COLOR,
-            LINE_COLOR,
-          ],
-          'line-width': [
-            'case',
-            ['boolean', ['feature-state', 'selected'], false], 3.0,
-            ['boolean', ['feature-state', 'hover'],    false], 1.8,
-            0.8,
-          ],
-        },
-      });
-
-      // ── Apply current filter / selection ────────────────────────────────
-      applyFilter(map, filterRef.current, showUndergroundRef.current);
       if (selectedUlpinRef.current) {
         applySelection(map, selectedUlpinRef.current, unitsRef.current, didClickRef);
       }
 
-      // ── fitBounds to dataset ─────────────────────────────────────────────
       const bounds = computeBounds(unitsRef.current);
       if (bounds) {
-        map.fitBounds(bounds, { padding: 60, duration: 0 });
+        map.fitBounds(bounds, { padding: 72, duration: 0, maxZoom: 18 });
       }
 
       mapReadyRef.current = true;
     });
 
-    // ── Hover via feature-state ───────────────────────────────────────────
-    map.on('mousemove', (e) => {
-      if (!mapReadyRef.current) return;
-      const features = map.queryRenderedFeatures(e.point, {
-        layers: [FILL_LAYER_ID, EXTRUDE_LAYER_ID],
-      });
-      const currentId = (features[0]?.id as string) ?? null;
+    map.on('error', (event) => {
+      const sourceId = (event as { sourceId?: string }).sourceId;
+      if (sourceId === SOURCE_ID) return;
 
-      if (hoveredIdRef.current && hoveredIdRef.current !== currentId) {
-        map.setFeatureState({ source: SOURCE_ID, id: hoveredIdRef.current }, { hover: false });
+      if (sourceId === BASEMAP_RASTER_SOURCE_ID && !blueprintAppliedRef.current) {
+        blueprintAppliedRef.current = true;
+        setBasemapUnavailable(true);
+        map.setStyle(createBlueprintStyle());
       }
-      if (currentId) {
-        map.setFeatureState({ source: SOURCE_ID, id: currentId }, { hover: true });
-      }
-      hoveredIdRef.current = currentId;
-      map.getCanvas().style.cursor = currentId ? 'pointer' : '';
     });
 
-    map.on('mouseleave', FILL_LAYER_ID, () => {
-      if (hoveredIdRef.current) {
-        map.setFeatureState({ source: SOURCE_ID, id: hoveredIdRef.current }, { hover: false });
-        hoveredIdRef.current = null;
-      }
-      map.getCanvas().style.cursor = '';
+    map.on('mousemove', (event) => {
+      if (!mapReadyRef.current) return;
+      const features = map.queryRenderedFeatures(event.point, {
+        layers: [FILL_LAYER_ID, EXTRUDE_LAYER_ID].filter((id) => Boolean(map.getLayer(id))),
+      });
+      const feature = features[0];
+      const id = feature?.properties?.ulpin ?? feature?.id;
+      setHoverState(map, hoveredIdRef, id == null ? null : String(id));
     });
 
-    // ── Click → onSelect ─────────────────────────────────────────────────
-    map.on('click', (e) => {
+    map.on('click', (event) => {
       if (!mapReadyRef.current) return;
-      const features = map.queryRenderedFeatures(e.point, {
-        layers: [FILL_LAYER_ID, EXTRUDE_LAYER_ID],
+
+      const features = map.queryRenderedFeatures(event.point, {
+        layers: [FILL_LAYER_ID, EXTRUDE_LAYER_ID].filter((id) => Boolean(map.getLayer(id))),
       });
+
       if (features.length === 0) {
         didClickRef.current = null;
         onSelectRef.current(null);
         return;
       }
-      // Prefer non-parcel on overlapping features
-      const target = features.find((f) => f.properties?.unit_type !== 'parcel') ?? features[0];
-      const id = (target.id as string) ?? target.properties?.ulpin ?? null;
-      didClickRef.current = id;
-      onSelectRef.current(id);
+
+      const target =
+        features.find((feature) => feature.properties?.unit_type !== 'parcel') ?? features[0];
+      const ulpin = target.properties?.ulpin ?? target.id;
+      if (ulpin == null) return;
+
+      const selectedId = String(ulpin);
+      didClickRef.current = selectedId;
+      onSelectRef.current(selectedId);
     });
 
-    mapRef.current = map;
-
     return () => {
+      resizeObserver.disconnect();
       mapReadyRef.current = false;
       map.remove();
       mapRef.current = null;
     };
-  }, []); // mount once
+  }, []);
 
-  // ── Update GeoJSON source data ────────────────────────────────────────────
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !mapReadyRef.current) return;
-    const src = map.getSource(SOURCE_ID) as maplibregl.GeoJSONSource | undefined;
-    if (src) {
-      src.setData({ type: 'FeatureCollection', features: units });
-    }
+    const source = map.getSource(SOURCE_ID) as maplibregl.GeoJSONSource | undefined;
+    source?.setData({ type: 'FeatureCollection', features: units });
   }, [units]);
 
-  // ── Update filter (type/status/query/underground) ─────────────────────────
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !mapReadyRef.current) return;
     applyFilter(map, filter, showUnderground);
   }, [filter, showUnderground]);
 
-  // ── Update selection highlight + camera ───────────────────────────────────
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !mapReadyRef.current) return;
     applySelection(map, selectedUlpin, units, didClickRef);
   }, [selectedUlpin, units]);
 
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReadyRef.current) return;
+    applyViewMode(map, viewMode);
+  }, [viewMode]);
+
   return (
-    <div
-      ref={containerRef}
-      style={{ width: '100%', height: '100%', position: 'relative' }}
-    />
+    <div className={`map2d-root ${className ?? ''}`}>
+      <div ref={containerRef} className="map2d-canvas" />
+
+      {basemapUnavailable && (
+        <div className="map2d-basemap-warn" role="status">
+          Basemap unavailable
+        </div>
+      )}
+
+      <div className="map2d-info">
+        <div className="map2d-info-title">2D · MAPLIBRE</div>
+        <div>Bengaluru cadastral overlay</div>
+        <div>{units.length} units · EPSG:4326</div>
+      </div>
+
+      <div className="map2d-legend" aria-label="Status legend">
+        <div className="legend-title">STATUS</div>
+        {Object.entries(STATUS_COLORS).map(([status, color]) => (
+          <div key={status} className="legend-item">
+            <span className="legend-dot" style={{ background: color }} />
+            {status}
+          </div>
+        ))}
+      </div>
+
+      <div className="map2d-toolbar">
+        <button type="button" onClick={fitToData}>
+          Fit to data
+        </button>
+      </div>
+    </div>
   );
 };
 

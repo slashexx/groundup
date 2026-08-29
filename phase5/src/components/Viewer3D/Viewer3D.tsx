@@ -101,7 +101,12 @@ function applyVisibility(
   for (const entity of viewer.entities.values) {
     const p = propsMap.get(entity.id);
     if (p) {
-      entity.show = isUnitVisible(p, filter, sliceHeight, showUnderground);
+      entity.show = isUnitVisible(
+        p,
+        filter,
+        sliceHeight ?? 0,
+        showUnderground
+      );
     }
   }
   viewer.scene.requestRender();
