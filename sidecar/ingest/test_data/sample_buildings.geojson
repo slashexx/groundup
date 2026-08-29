@@ -1,0 +1,31 @@
+{
+  "type": "FeatureCollection",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "urn:ogc:def:crs:OGC:1.3:CRS84"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "building_local_id": "BLDG_TOWER_A",
+        "parcel_local_id": "P2026_PARCEL_001",
+        "floors_count": 5
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [72.8776, 19.0761],
+            [72.8779, 19.0761],
+            [72.8779, 19.0764],
+            [72.8776, 19.0764],
+            [72.8776, 19.0761]
+          ]
+        ]
+      }
+    }
+  ]
+}

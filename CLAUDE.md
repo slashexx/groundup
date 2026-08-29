@@ -49,6 +49,7 @@ information that is absent from `.claude/`.
 | [`.claude/05-validation.md`](.claude/05-validation.md) | Anything under `cadastre/validate/`, or the fixture |
 | [`.claude/06-contracts.md`](.claude/06-contracts.md) | Changing any schema, or an interface with another block |
 | [`.claude/08-open-questions.md`](.claude/08-open-questions.md) | Planning, or when something seems unresolved |
+| [`.claude/blocks/p2-ingest.md`](.claude/blocks/p2-ingest.md) | Working in `sidecar/ingest/` (P2 Geo Data Pipeline), or consuming it |
 | [`.claude/blocks/p5-viewer.md`](.claude/blocks/p5-viewer.md) | Working in `viewer/` (P5 components), or consuming them |
 
 ### Planned: per-block segregation
