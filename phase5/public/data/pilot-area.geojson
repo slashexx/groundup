@@ -1,0 +1,400 @@
+{
+  "type": "FeatureCollection",
+  "name": "sih26011-pilot-area",
+  "description": "Hand-authored sample for P5 development. Doubles as the proposed P4->P5 contract. CRS EPSG:4326 [lon,lat]; heights in meters, local vertical datum (ground = 0).",
+  "features": [
+    {
+      "type": "Feature",
+      "id": "KA-BLR-0042",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [77.594, 12.971],
+            [77.5948, 12.971],
+            [77.5948, 12.9716],
+            [77.594, 12.9716],
+            [77.594, 12.971]
+          ]
+        ]
+      },
+      "properties": {
+        "ulpin": "KA-BLR-0042",
+        "unit_type": "parcel",
+        "parent_ulpin": null,
+        "base_height": 0.0,
+        "top_height": 0.15,
+        "status": "approved",
+        "owner": "Prestige Meadows Owners Association",
+        "source": "cadastral_map+gnss",
+        "confidence": 0.98,
+        "findings": []
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "KA-BLR-0042-B01",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [77.59415, 12.97115],
+            [77.5944, 12.97115],
+            [77.5944, 12.97135],
+            [77.59415, 12.97135],
+            [77.59415, 12.97115]
+          ]
+        ]
+      },
+      "properties": {
+        "ulpin": "KA-BLR-0042-B01",
+        "unit_type": "building",
+        "parent_ulpin": "KA-BLR-0042",
+        "base_height": -3.0,
+        "top_height": 12.0,
+        "status": "approved",
+        "owner": "Block A (12 units)",
+        "source": "drone_ortho+lidar",
+        "confidence": 0.95,
+        "findings": []
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "KA-BLR-0042-B01-B1",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [77.59415, 12.97115],
+            [77.5944, 12.97115],
+            [77.5944, 12.97135],
+            [77.59415, 12.97135],
+            [77.59415, 12.97115]
+          ]
+        ]
+      },
+      "properties": {
+        "ulpin": "KA-BLR-0042-B01-B1",
+        "unit_type": "underground",
+        "parent_ulpin": "KA-BLR-0042-B01",
+        "base_height": -3.0,
+        "top_height": 0.0,
+        "status": "checked",
+        "owner": "Block A common parking",
+        "source": "floor_plan",
+        "confidence": 0.88,
+        "findings": [
+          {
+            "level": "info",
+            "msg": "depth taken from structural drawing, not measured"
+          }
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "KA-BLR-0042-B01-F00",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [77.59415, 12.97115],
+            [77.5944, 12.97115],
+            [77.5944, 12.97135],
+            [77.59415, 12.97135],
+            [77.59415, 12.97115]
+          ]
+        ]
+      },
+      "properties": {
+        "ulpin": "KA-BLR-0042-B01-F00",
+        "unit_type": "floor",
+        "parent_ulpin": "KA-BLR-0042-B01",
+        "base_height": 0.0,
+        "top_height": 3.0,
+        "status": "approved",
+        "owner": "R. Iyer",
+        "source": "floor_plan+lidar",
+        "confidence": 0.94,
+        "findings": []
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "KA-BLR-0042-B01-F01",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [77.59415, 12.97115],
+            [77.5944, 12.97115],
+            [77.5944, 12.97135],
+            [77.59415, 12.97135],
+            [77.59415, 12.97115]
+          ]
+        ]
+      },
+      "properties": {
+        "ulpin": "KA-BLR-0042-B01-F01",
+        "unit_type": "floor",
+        "parent_ulpin": "KA-BLR-0042-B01",
+        "base_height": 3.0,
+        "top_height": 6.0,
+        "status": "approved",
+        "owner": "S. Nair & M. Nair",
+        "source": "floor_plan+lidar",
+        "confidence": 0.94,
+        "findings": []
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "KA-BLR-0042-B01-F02",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [77.59415, 12.97115],
+            [77.5944, 12.97115],
+            [77.5944, 12.97135],
+            [77.59415, 12.97135],
+            [77.59415, 12.97115]
+          ]
+        ]
+      },
+      "properties": {
+        "ulpin": "KA-BLR-0042-B01-F02",
+        "unit_type": "floor",
+        "parent_ulpin": "KA-BLR-0042-B01",
+        "base_height": 6.0,
+        "top_height": 9.0,
+        "status": "draft",
+        "owner": "K. Reddy",
+        "source": "floor_plan",
+        "confidence": 0.81,
+        "findings": [
+          {
+            "level": "warning",
+            "msg": "floor height interpolated from DSM - DEM"
+          }
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "KA-BLR-0042-B01-F03-U01",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [77.59415, 12.97115],
+            [77.594275, 12.97115],
+            [77.594275, 12.97135],
+            [77.59415, 12.97135],
+            [77.59415, 12.97115]
+          ]
+        ]
+      },
+      "properties": {
+        "ulpin": "KA-BLR-0042-B01-F03-U01",
+        "unit_type": "apartment",
+        "parent_ulpin": "KA-BLR-0042-B01",
+        "base_height": 9.0,
+        "top_height": 12.0,
+        "status": "approved",
+        "owner": "A. Sharma",
+        "source": "floor_plan+lidar",
+        "confidence": 0.91,
+        "findings": []
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "KA-BLR-0042-B01-F03-U02",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [77.594275, 12.97115],
+            [77.5944, 12.97115],
+            [77.5944, 12.97135],
+            [77.594275, 12.97135],
+            [77.594275, 12.97115]
+          ]
+        ]
+      },
+      "properties": {
+        "ulpin": "KA-BLR-0042-B01-F03-U02",
+        "unit_type": "apartment",
+        "parent_ulpin": "KA-BLR-0042-B01",
+        "base_height": 9.0,
+        "top_height": 12.0,
+        "status": "checked",
+        "owner": "F. D'Souza",
+        "source": "floor_plan+lidar",
+        "confidence": 0.9,
+        "findings": [
+          {
+            "level": "info",
+            "msg": "party wall position averaged between plan and point cloud"
+          }
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "KA-BLR-0042-B02",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [77.5945, 12.9714],
+            [77.59472, 12.9714],
+            [77.59472, 12.97155],
+            [77.5945, 12.97155],
+            [77.5945, 12.9714]
+          ]
+        ]
+      },
+      "properties": {
+        "ulpin": "KA-BLR-0042-B02",
+        "unit_type": "building",
+        "parent_ulpin": "KA-BLR-0042",
+        "base_height": 0.0,
+        "top_height": 9.6,
+        "status": "checked",
+        "owner": "Block B (6 units)",
+        "source": "drone_ortho+lidar",
+        "confidence": 0.9,
+        "findings": []
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "KA-BLR-0042-B02-F00",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [77.5945, 12.9714],
+            [77.59472, 12.9714],
+            [77.59472, 12.97155],
+            [77.5945, 12.97155],
+            [77.5945, 12.9714]
+          ]
+        ]
+      },
+      "properties": {
+        "ulpin": "KA-BLR-0042-B02-F00",
+        "unit_type": "floor",
+        "parent_ulpin": "KA-BLR-0042-B02",
+        "base_height": 0.0,
+        "top_height": 3.2,
+        "status": "approved",
+        "owner": "V. Kulkarni",
+        "source": "floor_plan+lidar",
+        "confidence": 0.93,
+        "findings": []
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "KA-BLR-0042-B02-F01",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [77.5945, 12.9714],
+            [77.59472, 12.9714],
+            [77.59472, 12.97155],
+            [77.5945, 12.97155],
+            [77.5945, 12.9714]
+          ]
+        ]
+      },
+      "properties": {
+        "ulpin": "KA-BLR-0042-B02-F01",
+        "unit_type": "floor",
+        "parent_ulpin": "KA-BLR-0042-B02",
+        "base_height": 3.2,
+        "top_height": 6.8,
+        "status": "error",
+        "owner": "T. Banerjee",
+        "source": "floor_plan",
+        "confidence": 0.62,
+        "findings": [
+          {
+            "level": "error",
+            "msg": "volume overlaps KA-BLR-0042-B02-F02 by 0.4 m (top 6.8 vs base 6.4)"
+          },
+          {
+            "level": "warning",
+            "msg": "floor height interpolated from DSM - DEM"
+          }
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "KA-BLR-0042-B02-F02",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [77.5945, 12.9714],
+            [77.59472, 12.9714],
+            [77.59472, 12.97155],
+            [77.5945, 12.97155],
+            [77.5945, 12.9714]
+          ]
+        ]
+      },
+      "properties": {
+        "ulpin": "KA-BLR-0042-B02-F02",
+        "unit_type": "floor",
+        "parent_ulpin": "KA-BLR-0042-B02",
+        "base_height": 6.4,
+        "top_height": 9.6,
+        "status": "checked",
+        "owner": "P. Mehta",
+        "source": "floor_plan+lidar",
+        "confidence": 0.87,
+        "findings": []
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "KA-BLR-0042-UTIL-01",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [77.59395, 12.97102],
+            [77.59485, 12.97102],
+            [77.59485, 12.97108],
+            [77.59395, 12.97108],
+            [77.59395, 12.97102]
+          ]
+        ]
+      },
+      "properties": {
+        "ulpin": "KA-BLR-0042-UTIL-01",
+        "unit_type": "underground",
+        "parent_ulpin": "KA-BLR-0042",
+        "base_height": -8.0,
+        "top_height": -6.5,
+        "status": "checked",
+        "owner": "BWSSB water main easement",
+        "source": "utility_survey",
+        "confidence": 0.75,
+        "findings": [
+          {
+            "level": "warning",
+            "msg": "alignment digitized from 1998 utility drawing"
+          }
+        ]
+      }
+    }
+  ]
+}
