@@ -44,7 +44,7 @@ engine, ULPIN ledger, relationship graph, findings model, schemas.
 
 ## Data model
 
-Six tables, all inside the project `.gpkg`. Full DDL in `cadastre/store.py`.
+Six tables, all inside the project `.gpkg`. Full DDL in `sidecar/cadastre/store.py`.
 
 **`unit`** — the identity split is the important part. `unit_id` is opaque and permanent;
 `ulpin` is NULL until approval, then frozen. Enforced by

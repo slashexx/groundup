@@ -79,7 +79,7 @@ We do not prescribe how they are built, only what we receive and emit.
 - **From P2**: a harmonized GeoPackage in a single projected CRS (metres) with a `source`
   registry carrying **mandatory** `horizontal_accuracy_m` and `vertical_accuracy_m`.
   Those two columns are what our tolerance model runs on. See
-  `cadastre/contracts/inbound/p2-geopackage.md`.
+  `contracts/inbound/p2-geopackage.md`.
 - **From P3**: suggestion JSON. We consume **only** suggestions whose `review.state` is
   `accepted` or `edited`, which enforces FR-05 structurally rather than by convention.
 - **To P1, P5, P6**: `unit.schema.json` and `finding.schema.json`.

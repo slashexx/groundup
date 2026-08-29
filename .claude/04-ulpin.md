@@ -35,7 +35,7 @@ Strata: `A` above ground, `S` surface, `B` below ground.
 ## Check character
 
 ISO 7064 MOD 37,36 over the alphabet `0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ`.
-Implemented in `cadastre/ulpin/encode.py` and **verified empirically, not assumed**:
+Implemented in `sidecar/cadastre/ulpin/encode.py` and **verified empirically, not assumed**:
 
 | Error class | Detection rate |
 |---|---|

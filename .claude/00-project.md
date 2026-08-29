@@ -77,7 +77,7 @@ Six people, six blocks. **This repository contains only our block.**
 | P1 | Desktop app shell and review UX | bibisha |
 | P2 | Geo data pipeline, CRS and datum harmonisation | soumyadipta |
 | P3 | AI detection — building extraction, floor estimation | unassigned |
-| **P4** | **3D units, ULPIN, validation → `cadastre/`** | **dhruv, shankhanil** |
+| **P4** | **3D units, ULPIN, validation → `sidecar/cadastre/`** | **dhruv, shankhanil** |
 | P5 | Cesium + MapLibre viewer components | rudraksha, pragati |
 | P6 | Static web app, publish, demo | unassigned |
 

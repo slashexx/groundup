@@ -14,28 +14,35 @@ corridors below them.
 
 ---
 
-## What this repository contains
+## Repository
 
-**Only the P4 block — `cadastre/`.** Six people are building six blocks; the other five
-live in their own folders, added by their owners.
+Single repository for the whole project — six blocks, six owners, everyone pushes here.
 
-`cadastre/` is the part that turns shapes into *owned volumes with names*, and then proves
-those volumes are mutually consistent. Everything upstream produces flat geometry;
-everything downstream displays and exports. This is the block that makes the system a
+```
+groundup/
+├── contracts/              cross-team interfaces (JSON Schema)
+│   ├── inbound/            what the cadastre block requires
+│   ├── outbound/           what it emits
+│   └── fixtures/           demo-parcel.json, defects deliberately planted
+└── sidecar/
+    └── cadastre/           3D units, ULPIN, validation
+        ├── models.py       domain types
+        ├── store.py        six tables, SQLite over the project GeoPackage
+        ├── extrude/        footprint + DEM/DSM -> building -> floors -> apartments
+        ├── ulpin/          minting, ledger, lifecycle state machine
+        ├── validate/       topology and provenance checks
+        ├── tools/          fixture generator
+        └── tests/
+```
+
+Remaining blocks — the desktop shell, the geo pipeline, AI detection, the viewer
+components and the static web build — are added by their owners. Nothing is scaffolded
+for them in advance.
+
+`sidecar/cadastre/` is the block that turns shapes into *owned volumes with names* and
+then proves those volumes are mutually consistent. Everything upstream produces flat
+geometry; everything downstream displays and exports. This is what makes the system a
 cadastre rather than a 3D model viewer.
-
-```
-cadastre/
-├── models.py        domain types
-├── store.py         six tables, SQLite over the project GeoPackage
-├── extrude/         footprint + DEM/DSM -> building -> floors -> apartments
-├── ulpin/           minting, ledger, lifecycle state machine
-├── validate/        topology and provenance checks
-├── contracts/       JSON Schemas — the cross-team interface
-│   └── fixtures/    demo-parcel.json, with defects deliberately planted
-├── tools/           fixture generator
-└── tests/
-```
 
 Owners: **dhruv** (rasters and spatial predicates) · **shankhanil** (identity, process,
 schema).
@@ -116,12 +123,12 @@ recognises.
 ## Getting started
 
 ```bash
-python3 cadastre/tools/make_fixture.py    # regenerate the demo fixture
-pytest cadastre/tests
-ruff check cadastre
+python3 sidecar/cadastre/tools/make_fixture.py    # regenerate the demo fixture
+pytest sidecar/cadastre/tests
+ruff check sidecar/cadastre
 ```
 
-The fixture at `cadastre/contracts/fixtures/demo-parcel.json` is a complete scenario —
+The fixture at `contracts/fixtures/demo-parcel.json` is a complete scenario —
 16 units across one parcel and its neighbour, with defects planted for every severity plus
 two **negative tests** recording findings that must *not* fire. Downstream blocks build
 against it before our real code exists.

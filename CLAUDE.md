@@ -3,9 +3,26 @@
 3D ULPIN generation and vertical property mapping.
 SIH 2026 · **SIH26011** · Ministry of Rural Development, Dept of Land Resources.
 
-**This repository contains only the P4 block (`cadastre/`).** Other blocks are owned by
-other people and live in their own folders, added by them. Do not scaffold, design,
-prescribe implementation for, or create placeholder files for any block that is not ours.
+**This is the single repository for the whole project.** All six blocks land here and
+everyone pushes to it. `.claude/` is the source of truth for the entire project, not just
+for our part.
+
+**We own `sidecar/cadastre/`.** Other blocks are added by their owners, at paths they
+choose. Do not scaffold, design, prescribe implementation for, or create placeholder
+folders for a block that is not ours — not even empty ones. An empty folder is still an
+instruction.
+
+```
+groundup/
+├── CLAUDE.md · README.md · .claude/     project-wide
+├── contracts/                           cross-team interfaces (we author ours)
+└── sidecar/
+    └── cadastre/    ← ours              Python block; siblings arrive from their owners
+```
+
+The layout is meant to read sensibly as the repository fills up: `sidecar/` groups the
+Python blocks, `contracts/` is the shared interface surface. Nobody's folder is created
+in advance.
 
 ---
 
@@ -122,9 +139,9 @@ them for convenience.
 ## Quick reference
 
 ```bash
-python3 cadastre/tools/make_fixture.py    # regenerate the fixture (edit the generator, not the JSON)
-pytest cadastre/tests                     # tests
-ruff check cadastre                       # lint
+python3 sidecar/cadastre/tools/make_fixture.py    # regenerate the fixture (edit the generator, not the JSON)
+pytest sidecar/cadastre/tests                     # tests
+ruff check sidecar/cadastre                       # lint
 ```
 
 Ownership inside the block: **dhruv** owns rasters and spatial predicates (`extrude/`,

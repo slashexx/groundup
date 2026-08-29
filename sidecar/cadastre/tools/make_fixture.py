@@ -20,8 +20,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-PKG = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PKG.parent))
+PKG  = Path(__file__).resolve().parents[1]          # sidecar/cadastre
+REPO = Path(__file__).resolve().parents[3]          # repo root
+sys.path.insert(0, str(PKG.parent))   # sidecar/ on the path
 
 from cadastre.ulpin.encode import Stratum, format_ulpin  # noqa: E402
 
@@ -238,8 +239,8 @@ bundle = {
     "must_not_fire": must_not_fire,
 }
 
-out = PKG / "contracts/fixtures/demo-parcel.json"
+out = REPO / "contracts/fixtures/demo-parcel.json"
 out.write_text(json.dumps(bundle, indent=2) + "\n")
-print(f"wrote {out.relative_to(PKG.parent)}")
+print(f"wrote {out.relative_to(REPO)}")
 print(f"  units {len(units)}  relationships {len(rels)}  sources {len(SOURCES)}")
 print(f"  expected findings {len(expected)}  negative tests {len(must_not_fire)}")

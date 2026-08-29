@@ -57,7 +57,7 @@ Backup of the original global config: `~/.gitconfig.bak-20260829`.
 ## Regenerating the fixture
 
 ```bash
-python3 cadastre/tools/make_fixture.py
+python3 sidecar/cadastre/tools/make_fixture.py
 ```
 
 **Edit the generator, never the JSON.** The JSON is committed output so downstream teams

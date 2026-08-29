@@ -1,6 +1,6 @@
 # Contracts
 
-`cadastre/contracts/` is the only cross-team surface. **JSON Schema is the source of
+`contracts/` is the only cross-team surface. **JSON Schema is the source of
 truth** — language-neutral, because our block is Python and every consumer is TypeScript.
 TS types are generated from these; we validate with `jsonschema`.
 
