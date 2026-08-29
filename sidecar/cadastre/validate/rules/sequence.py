@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import itertools
+
 from ...models import Finding, RuleId, Severity, UnitType
 from .. import tolerance
 from ._util import finding
@@ -24,8 +26,8 @@ def floor_sequence(ctx, run_id: str) -> list[Finding]:
     way the stack no longer describes a real building.
     """
     out = []
-    for _, floors in _floors_by_building(ctx).items():
-        for below, above in zip(floors, floors[1:]):
+    for floors in _floors_by_building(ctx).values():
+        for below, above in itertools.pairwise(floors):
             b, a = ctx.units[below], ctx.units[above]
             if None in (b.upper_limit, a.lower_limit):
                 continue

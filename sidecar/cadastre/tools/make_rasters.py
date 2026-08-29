@@ -47,8 +47,8 @@ TANK = (E + 12, N + 10, E + 14, N + 12)   # 2 x 2 m
 
 
 def _grid():
-    w = int(round((X1 - X0) / RES))
-    h = int(round((Y1 - Y0) / RES))
+    w = round((X1 - X0) / RES)
+    h = round((Y1 - Y0) / RES)
     xs = X0 + (np.arange(w) + 0.5) * RES
     ys = Y1 - (np.arange(h) + 0.5) * RES
     return np.meshgrid(xs, ys)

@@ -7,6 +7,7 @@ it rather than merely producing something plausible.
 
 from __future__ import annotations
 
+import itertools
 import subprocess
 import sys
 from pathlib import Path
@@ -129,7 +130,7 @@ def test_floors_are_contiguous_and_fill_the_building(rasters, settings):
     assert len(fl) == 7
     assert fl[0].lower_limit == pytest.approx(b.lower_limit)
     assert fl[-1].upper_limit == pytest.approx(b.upper_limit)
-    for below, above in zip(fl, fl[1:]):
+    for below, above in itertools.pairwise(fl):
         assert below.upper_limit == pytest.approx(above.lower_limit, abs=1e-9)
     assert all(f.height == pytest.approx(3.0, abs=0.05) for f in fl)
 

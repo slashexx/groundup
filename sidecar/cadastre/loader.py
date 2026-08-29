@@ -28,7 +28,7 @@ from .models import (
 
 
 def _dt(v: str | None) -> datetime | None:
-    return datetime.fromisoformat(v.replace("Z", "+00:00")) if v else None
+    return datetime.fromisoformat(v) if v else None
 
 
 def _d(v: str | None) -> date | None:
