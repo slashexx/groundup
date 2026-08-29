@@ -1,0 +1,100 @@
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; margin: 0; }
+
+body {
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
+  color: #1c2321;
+  background: #f7f7f4;
+}
+
+.app { display: flex; flex-direction: column; height: 100%; }
+
+/* header */
+.app-header {
+  display: flex; align-items: center; gap: 24px; flex-wrap: wrap;
+  padding: 10px 16px; border-bottom: 1px solid #dfe3de; background: #fff;
+}
+.app-title h1 { font-size: 16px; margin: 0; letter-spacing: -0.01em; }
+.app-title span { font-size: 12px; color: #5b6663; }
+
+/* search + filter */
+.p5-searchfilter { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; flex: 1; }
+.p5-search {
+  flex: 0 1 320px; padding: 7px 12px; font-size: 13px;
+  border: 1px solid #c9cec8; border-radius: 8px; background: #f7f7f4;
+  font-family: ui-monospace, Menlo, monospace;
+}
+.p5-search:focus { outline: 2px solid #0d6b58; outline-offset: 1px; }
+.p5-chips { display: flex; gap: 6px; }
+.p5-chip {
+  font-size: 11.5px; font-weight: 600; padding: 3px 10px; cursor: pointer;
+  border: 1px solid #c9cec8; border-radius: 100px; background: #fff; color: #9aa39e;
+}
+.p5-chip.on { border-color: #0d6b58; color: #0d6b58; background: #e3efe9; }
+
+/* main layout */
+.app-main {
+  flex: 1; min-height: 0; display: grid; gap: 1px; background: #dfe3de;
+  grid-template-columns: 1fr 1.4fr 300px;
+  /* single explicit row: never let canvas intrinsic size grow the track */
+  grid-template-rows: minmax(0, 1fr);
+}
+.pane { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: #fff; }
+.pane-label {
+  position: absolute; z-index: 5; top: 8px; left: 8px;
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+  background: rgba(255, 255, 255, 0.85); color: #5b6663;
+  padding: 3px 8px; border-radius: 5px; pointer-events: none;
+}
+
+/* details panel */
+.p5-panel { background: #fff; padding: 16px; overflow-y: auto; }
+.p5-panel-empty { display: flex; align-items: center; color: #5b6663; font-size: 13px; padding: 24px; }
+.p5-crumbs { display: flex; gap: 4px; align-items: center; font-size: 11.5px; margin-bottom: 8px; flex-wrap: wrap; }
+.p5-crumbs button {
+  border: none; background: none; padding: 0; cursor: pointer;
+  color: #0d6b58; font-size: 11.5px; text-decoration: underline;
+}
+.p5-crumbs button::after { content: ' ›'; color: #9aa39e; text-decoration: none; }
+.p5-crumbs span { color: #5b6663; }
+.p5-ulpin { font-family: ui-monospace, Menlo, monospace; font-size: 15px; margin: 0 0 8px; word-break: break-all; }
+.p5-badges { display: flex; gap: 6px; margin-bottom: 14px; }
+.p5-badge {
+  font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+  padding: 2px 8px; border-radius: 4px; background: #ececea; color: #5b6663;
+}
+.p5-fields { margin: 0; }
+.p5-fields dt { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #9aa39e; margin-top: 10px; }
+.p5-fields dd { margin: 2px 0 0; font-size: 13px; }
+.p5-findings, .p5-children { margin-top: 16px; }
+.p5-findings h3, .p5-children h3 {
+  font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+  color: #9aa39e; margin: 0 0 6px;
+}
+.p5-finding { font-size: 12.5px; margin: 0 0 6px; padding: 6px 10px; border-radius: 6px; }
+.p5-finding strong { text-transform: uppercase; font-size: 10px; letter-spacing: 0.05em; margin-right: 6px; }
+.p5-error { background: #f7e5e0; color: #7c2d1c; }
+.p5-warning { background: #f8efdd; color: #7a4a06; }
+.p5-info { background: #e7eef5; color: #2c5578; }
+.p5-children button {
+  display: block; border: none; background: none; padding: 2px 0; cursor: pointer;
+  color: #0d6b58; font-family: ui-monospace, Menlo, monospace; font-size: 12px;
+}
+
+/* footer controls */
+.app-footer {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 8px 16px; border-top: 1px solid #dfe3de; background: #fff;
+}
+.ctl { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 550; }
+.ctl input[type='checkbox'] { accent-color: #0d6b58; }
+.ctl-slider { width: 220px; accent-color: #0d6b58; }
+.ctl-value { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; min-width: 52px; color: #5b6663; }
+.legend { display: flex; gap: 12px; margin-left: auto; }
+.legend-item { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #5b6663; }
+.legend-item i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+
+/* hide cesium's default focus ring artifacts inside panes */
+.p5-viewer3d .cesium-widget canvas { outline: none; }
