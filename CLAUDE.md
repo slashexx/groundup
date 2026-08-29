@@ -90,7 +90,9 @@ After any of the following, update the relevant file *in the same commit as the 
 - a design or architecture decision is made, changed, or reversed
 - a requirement is reinterpreted, or a contradiction in the PRD is resolved
 - an algorithm, threshold, tolerance or constant is chosen — record the *reason*
-- an interface with another block is agreed or altered
+- an interface with another block is agreed or altered — and when a decision changes any
+  value, format, threshold or field, **grep `contracts/` before anything else** and update
+  it in the same commit; see `07-conventions.md`
 - an assumption is invalidated, or a bug reveals a wrong belief
 - an option is considered and **rejected** — record it and why; rejected options are
   asked about by reviewers and judges

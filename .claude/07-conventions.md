@@ -64,6 +64,46 @@ python3 -m venv .venv && ./.venv/bin/pip install shapely pytest hypothesis jsons
 `.venv/` is git-ignored. `pyproject.toml` under `sidecar/cadastre/` holds the real
 dependency list.
 
+## When a decision changes, check `contracts/` first
+
+Our own docs going stale is an inconvenience. **The contract going stale is a defect
+delivered to a teammate**, because it is the one file whose staleness propagates into
+someone else's code.
+
+This has already happened once. We changed the roof estimator from a high percentile to a
+median, which made `parapet_deduction` unnecessary. `.claude/03-design.md` was updated,
+the fixture generator was updated, the tests were updated — and
+`contracts/inbound/p2-geopackage.md` still said `1.0`. Every artifact we owned was
+internally consistent. P2 read the contract, implemented it faithfully, and every building
+came out a metre short with every storey 14 cm shy. **All 13 validation rules passed**,
+because a uniform offset leaves every relative relationship intact.
+
+So, after any decision that touches a value, a format, a threshold or a field:
+
+1. `grep` the changed name across `contracts/` before anything else
+2. update the contract in the **same commit** as the decision
+3. record *why* the old value is wrong, not just what the new one is — a bare value gives
+   a reader nothing to check their own assumptions against
+
+### Documentation is the weakest possible enforcement
+
+The correct fix for that bug was not editing the markdown. It was making
+`extrude.building.build` raise `EstimatorMismatch` on a non-zero deduction, so the bad
+configuration cannot be silently accepted by anyone, ever.
+
+Prefer, in order:
+
+| | Mechanism |
+|---|---|
+| best | make the bad state unrepresentable (a type, an enum, a required field) |
+| good | refuse it at runtime with a message naming the setting and the correct value |
+| weak | a schema constraint that only fires if someone validates |
+| worst | a sentence in a document, and hope |
+
+A rule that lives only in prose has already failed once here. When a wrong value would be
+**silent** — producing plausible output that passes every check — prose is never
+sufficient.
+
 ## Mutation testing
 
 After changing any rule or threshold, delete the guard it depends on and confirm the
