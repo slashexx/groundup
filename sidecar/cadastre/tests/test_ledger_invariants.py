@@ -9,10 +9,9 @@ than by exercising the happy path:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
-
 from cadastre import store
 from cadastre.models import CreatedBy, Status, Unit, UnitType
 from cadastre.ulpin import encode, ledger
@@ -37,7 +36,7 @@ def unit(uid: str, provisional: str | None = None, parent: str | None = PARENT) 
         crs="EPSG:32643", vertical_datum="EGM2008", footprint_2d=SQUARE,
         source_ids=["SRC-005"], created_by=CreatedBy.HUMAN,
         ulpin_provisional=provisional, ulpin_version="v1",
-        recorded_from=datetime.now(timezone.utc), attributes=attrs,
+        recorded_from=datetime.now(UTC), attributes=attrs,
     )
 
 

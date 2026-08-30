@@ -120,6 +120,42 @@ topic.
 
 ---
 
+## Testing — every guard, or it isn't a guard
+
+**Nothing lands without a test, and no test counts until it has been shown it can fail.**
+
+1. **Every rule, threshold, guard and estimator choice gets a test.** Not the module - the
+   *decision*. If the code says median rather than p90, a test asserts median wins; if a
+   value is refused, a test asserts the refusal.
+2. **Every guard gets a mutation.** Add it to `MUTATIONS` in
+   `sidecar/cadastre/tools/mutation_check.py` in the same commit. A rule whose deletion
+   keeps the suite green is not being tested, and CI fails on any survivor.
+3. **Assert the silence too.** What must *not* fire is as much a specification as what
+   must. A validator that flags everything is useless, and the fixture's `must_not_fire`
+   block is where those cases live.
+4. **Invariants get property-based tests** (`hypothesis`), not just examples. Round-trips,
+   symmetry, monotonicity, and stability under insertion are properties.
+5. **Prefer exact assertions.** The fixture geometry is axis-aligned precisely so expected
+   values are arithmetic - `7.20 m2`, not `approximately 7`.
+6. **A negative test that passes for the wrong reason is worse than no test.** One of ours
+   asserted a rule stayed quiet, but the unit had no parent so the rule never ran at all.
+   Mutation testing is what caught it. This is why step 2 is not optional.
+
+Run before pushing:
+
+```bash
+./.venv/bin/python -m pytest sidecar/cadastre/tests -q
+./.venv/bin/python sidecar/cadastre/tools/mutation_check.py
+```
+
+CI (`.github/workflows/cadastre.yml`) runs three jobs on any change to
+`sidecar/cadastre/**` or `contracts/**`: the suite plus lint, the mutation battery, and a
+contracts job that validates every schema and checks the fixture against them. The tests
+job also regenerates the fixture and fails if the committed JSON differs — the generator
+is the source, the JSON is output.
+
+---
+
 ## Hard invariants
 
 These come from the PRD and are architectural constraints, not features. Do not weaken

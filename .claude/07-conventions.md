@@ -107,9 +107,29 @@ sufficient.
 ## Mutation testing
 
 After changing any rule or threshold, delete the guard it depends on and confirm the
-suite goes red. A rule whose removal keeps the tests green is not being tested. See the
-battery in `05-validation.md` — it has already caught one vacuous negative test and one
-wrong threshold that a fully-passing suite had missed.
+suite goes red. A rule whose removal keeps the tests green is not being tested.
+
+The battery is executable, not a checklist: `tools/mutation_check.py` holds 14 mutations,
+applies each one, and asserts the suite fails. Add an entry whenever you add a guard. A
+`STALE` result means the code moved and the mutation no longer matches anything — treat
+that as a failure too, because it means the guard is unverified.
+
+It has already caught three real defects that a fully-passing suite had missed: a vacuous
+negative test, a perimeter-scaled threshold that let a corridor escape its parcel, and a
+provisional ULPIN whose sequence was never reserved.
+
+## CI
+
+`.github/workflows/cadastre.yml`, scoped by path to `sidecar/cadastre/**` and
+`contracts/**`. Three jobs:
+
+| Job | Checks |
+|---|---|
+| `tests` | fixture regenerates identically, rasters build, pytest, ruff |
+| `mutations` | all 14 mutations turn the suite red |
+| `contracts` | every schema is valid Draft 2020-12 and every fixture unit satisfies it |
+
+Other blocks add their own workflows. This one is deliberately not a template for them.
 
 ## Regenerating the fixture
 

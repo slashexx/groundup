@@ -1,0 +1,93 @@
+name: cadastre
+
+# Scoped to the cadastre block and the shared contracts. Other blocks add their own
+# workflows; this one is not a template for them.
+on:
+  push:
+    branches: [main]
+    paths: ['sidecar/cadastre/**', 'contracts/**', '.github/workflows/cadastre.yml']
+  pull_request:
+    paths: ['sidecar/cadastre/**', 'contracts/**', '.github/workflows/cadastre.yml']
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: .
+
+jobs:
+  tests:
+    name: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: install
+        run: pip install shapely rasterio numpy pytest hypothesis jsonschema ruff
+      - name: fixture is generated, not hand-edited
+        run: |
+          python sidecar/cadastre/tools/make_fixture.py
+          git diff --exit-code contracts/fixtures/demo-parcel.json \
+            || (echo "::error::The committed fixture differs from what the generator produces. Edit the generator, never the JSON." && exit 1)
+      - name: rasters
+        run: python sidecar/cadastre/tools/make_rasters.py
+      - name: pytest
+        run: python -m pytest sidecar/cadastre/tests -q -W ignore::PendingDeprecationWarning
+      - name: lint
+        run: ruff check sidecar/cadastre
+
+  mutations:
+    name: mutations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: install
+        run: pip install shapely rasterio numpy pytest hypothesis jsonschema
+      - name: rasters
+        run: python sidecar/cadastre/tools/make_rasters.py
+      # A passing suite proves nothing on its own. Every mutation removes one guard and
+      # must turn the suite red; a survivor marks a rule nobody is actually testing.
+      - name: every guard must be load-bearing
+        run: python sidecar/cadastre/tools/mutation_check.py
+
+  contracts:
+    name: contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: install
+        run: pip install jsonschema
+      # Consumers in other blocks generate types from these. A malformed or drifted
+      # schema is a defect delivered to a teammate, so it fails here rather than there.
+      - name: schemas are valid and the fixture satisfies them
+        run: |
+          python - <<'PY'
+          import json, pathlib, sys
+          from jsonschema import Draft202012Validator as V
+          root = pathlib.Path('contracts')
+          ok = True
+          for p in sorted(root.rglob('*.schema.json')):
+              s = json.loads(p.read_text())
+              try:
+                  V.check_schema(s); print(f'  schema ok   {p}')
+              except Exception as e:
+                  print(f'  INVALID     {p}: {e}'); ok = False
+          unit = V(json.loads((root/'outbound/unit.schema.json').read_text()))
+          fx = json.loads((root/'fixtures/demo-parcel.json').read_text())
+          bad = 0
+          for u in fx['units']:
+              for err in unit.iter_errors(u):
+                  print(f"  {u['unit_id']}: {err.message}"); bad += 1
+          print(f'  {len(fx["units"])} fixture units checked, {bad} violation(s)')
+          sys.exit(0 if ok and bad == 0 else 1)
+          PY
