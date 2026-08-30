@@ -26,9 +26,13 @@ class TestP2GeoDataPipeline(unittest.TestCase):
         pipeline = GeoDataPipeline(gpkg_output_path=self.gpkg_path, target_crs="EPSG:32643")
         pipeline.setup_project()
 
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        parcels_file = os.path.join(base_dir, "test_data", "sample_parcels.geojson")
+        buildings_file = os.path.join(base_dir, "test_data", "sample_buildings.geojson")
+
         # 1. Ingest parcel dataset
         res_parcels = pipeline.process_file(
-            input_file_path="test_data/sample_parcels.geojson", 
+            input_file_path=parcels_file, 
             layer_name="parcel",
             source_id="SRC_PARCEL_MAP_01",
             source_type="parcel_map",
@@ -39,7 +43,7 @@ class TestP2GeoDataPipeline(unittest.TestCase):
 
         # 2. Ingest building footprint dataset
         res_buildings = pipeline.process_file(
-            input_file_path="test_data/sample_buildings.geojson", 
+            input_file_path=buildings_file, 
             layer_name="building_footprint",
             source_id="SRC_FOOTPRINT_DRONE_01",
             source_type="footprint",

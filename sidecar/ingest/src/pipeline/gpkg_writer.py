@@ -24,9 +24,9 @@ class GeoPackageWriter:
         source_name: str = "Survey Data Ingestion",
         provider: str = "Survey of India / DoLR",
         capture_date: str = "2026-08-29",
-        horizontal_accuracy_m: float = 0.05,
-        vertical_accuracy_m: float = 0.10,
-        vertical_datum: str = "MSL_EGM2008"
+        horizontal_accuracy_m: float = 0.20,
+        vertical_accuracy_m: float = 0.25,
+        vertical_datum: str = "EGM2008"
     ) -> bool:
         """
         Writes a harmonized GeoDataFrame to a specified layer in the GeoPackage file

@@ -39,8 +39,8 @@ class GeoDataPipeline:
         source_id: str,
         source_type: str,
         source_name: str = "Cadastral Survey Import",
-        horizontal_accuracy_m: float = 0.05,
-        vertical_accuracy_m: float = 0.10,
+        horizontal_accuracy_m: float = 0.20,
+        vertical_accuracy_m: float = 0.25,
         column_mapping: Optional[Dict[str, str]] = None
     ) -> bool:
         """

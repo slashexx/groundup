@@ -14,13 +14,13 @@ class GeoPackageSchemaManager:
     def ensure_contract_tables(
         self, 
         project_crs: str = "EPSG:32643", 
-        vertical_datum: str = "MSL_EGM2008",
+        vertical_datum: str = "EGM2008",
         stratum_below_limit_m: float = -30.0,
         stratum_above_limit_m: float = 150.0,
         default_plinth_offset_m: float = 0.6,
-        default_parapet_deduction_m: float = 1.0,
+        default_parapet_deduction_m: float = 0.0,
         ulpin_version: str = "v1",
-        ruleset_version: str = "v1"
+        ruleset_version: str = "r1"
     ):
         """
         Initializes registry and project settings tables in the GeoPackage file

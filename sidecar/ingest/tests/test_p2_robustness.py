@@ -28,7 +28,8 @@ class TestP2PipelineRobustness(unittest.TestCase):
         self.assertFalse(res["valid"])
         self.assertIn("does not exist", res["error"])
 
-        res_unsupported = inspector.inspect("tests/test_p2_pipeline.py")
+        test_file = os.path.abspath(__file__)
+        res_unsupported = inspector.inspect(test_file)
         self.assertFalse(res_unsupported["valid"])
         self.assertIn("Unsupported file extension", res_unsupported["error"])
 
@@ -60,9 +61,13 @@ class TestP2PipelineRobustness(unittest.TestCase):
         pipeline = GeoDataPipeline(gpkg_output_path=self.gpkg_path, target_crs="EPSG:32643")
         pipeline.setup_project()
 
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        parcels_file = os.path.join(base_dir, "test_data", "sample_parcels.geojson")
+        buildings_file = os.path.join(base_dir, "test_data", "sample_buildings.geojson")
+
         # Import File 1
         res1 = pipeline.process_file(
-            input_file_path="test_data/sample_parcels.geojson",
+            input_file_path=parcels_file,
             layer_name="parcel",
             source_id="SRC_SET_01",
             source_type="parcel_map"
@@ -71,7 +76,7 @@ class TestP2PipelineRobustness(unittest.TestCase):
 
         # Import File 2 (Appends layer building_footprint)
         res2 = pipeline.process_file(
-            input_file_path="test_data/sample_buildings.geojson",
+            input_file_path=buildings_file,
             layer_name="building_footprint",
             source_id="SRC_SET_02",
             source_type="footprint"
@@ -92,13 +97,16 @@ class TestP2PipelineRobustness(unittest.TestCase):
         pipeline = GeoDataPipeline(gpkg_output_path=self.gpkg_path, target_crs="EPSG:32643")
         pipeline.setup_project()
 
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        parcels_file = os.path.join(base_dir, "test_data", "sample_parcels.geojson")
+
         column_mapping = {
           "parcel_id": "parcel_local_id",
           "survey_no": "parent_ulpin_14"
         }
 
         res = pipeline.process_file(
-            input_file_path="test_data/sample_parcels.geojson",
+            input_file_path=parcels_file,
             layer_name="parcel",
             source_id="SRC_MAPPED_01",
             source_type="parcel_map",
