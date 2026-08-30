@@ -25,7 +25,7 @@ jobs:
           python-version: '3.12'
           cache: pip
       - name: install
-        run: pip install shapely rasterio numpy pytest hypothesis jsonschema ruff
+        run: pip install shapely rasterio numpy pytest hypothesis jsonschema ruff fastapi httpx
       - name: fixture is generated, not hand-edited
         run: |
           python sidecar/cadastre/tools/make_fixture.py
@@ -48,7 +48,7 @@ jobs:
           python-version: '3.12'
           cache: pip
       - name: install
-        run: pip install shapely rasterio numpy pytest hypothesis jsonschema
+        run: pip install shapely rasterio numpy pytest hypothesis jsonschema fastapi httpx
       - name: rasters
         run: python sidecar/cadastre/tools/make_rasters.py
       # A passing suite proves nothing on its own. Every mutation removes one guard and

@@ -82,7 +82,7 @@ draft ──> processing ──> needs_review ──> approved ──> replaced
 | draft → processing | job accepted | — |
 | processing → needs_review | job complete | run validation |
 | processing → draft | job failed | record error, leave prior record intact |
-| **needs_review → approved** | **zero Error findings AND every Warning acknowledged** | **freeze ULPIN, write ledger row** |
+| **needs_review → approved** | **a validation run exists AND it has zero Errors AND every Warning is acknowledged** | **freeze ULPIN, write ledger row** |
 | needs_review → draft | reviewer rejects | store comment |
 | approved → replaced | a successor exists | link `replaced_by`, ledger `state=replaced` |
 | approved → closed | decommissioned | ledger `state=closed`, ULPIN retained forever |
@@ -98,3 +98,26 @@ ULPIN presence by status:
 | approved | discarded | assigned, in ledger, frozen |
 | replaced | — | retained; successor gets a *new* one |
 | closed | — | retained forever, never reissued |
+
+
+## The approval guard fails closed
+
+`transition` loads the latest persisted run itself when one is not passed in. If **no run
+has ever been recorded, approval is refused** — an absent run means *we cannot verify this
+unit*, never *there is nothing to verify*.
+
+That distinction was originally a bug. The guard read
+`if validation_run is not None and not validation_run.approvable(...)`, so passing nothing
+skipped the check entirely — and the API passed nothing, because findings were computed in
+memory and never persisted. A unit whose `validation_state` was `failed` could be approved
+through the HTTP surface and receive a permanent identifier.
+
+This is the same shape as two other defects recorded in these notes: the `hasconfig` glob
+that matched nothing and fell back to the wrong git identity, and the stale contract that
+produced plausible-but-wrong heights. **In each case the code did something reasonable
+when information was missing, instead of stopping.** For a register that mints permanent
+identifiers, missing information is a refusal.
+
+Errors are additionally **not acknowledgeable**. A reviewer may accept a warning; an error
+must be corrected and validation re-run. `store.acknowledge_finding` rejects it, and the
+API returns 409.

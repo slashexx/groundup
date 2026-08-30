@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import UTC
 
 import pytest
 from cadastre.models import CreatedBy, Representation, Status, Unit, UnitType
-from cadastre.store import get_unit, init_schema, save_unit
+from cadastre.store import get_unit, init_schema, save_run, save_unit
 from cadastre.ulpin import ledger, lifecycle
 
 
@@ -50,6 +51,16 @@ def test_sequence_allocation_is_idempotent(memory_db):
     assert seq3 == seq1 + 1
 
 
+def _clean_run():
+    """A validation run that found nothing, so approval is permitted."""
+    from datetime import datetime
+
+    from cadastre.validate import ValidationRun
+    now = datetime.now(UTC)
+    return ValidationRun(run_id="RUN-CLEAN", started_at=now, finished_at=now,
+                         ruleset_version="r1", findings=[])
+
+
 def test_lifecycle_transitions(memory_db):
     u = _sample_unit("UNIT-100", status=Status.DRAFT)
     save_unit(memory_db, u)
@@ -61,6 +72,10 @@ def test_lifecycle_transitions(memory_db):
     # PROCESSING -> NEEDS_REVIEW
     lifecycle.transition(memory_db, u, Status.NEEDS_REVIEW, actor="operator")
     assert u.status == Status.NEEDS_REVIEW
+
+    # Approval now requires a recorded validation run. An absent one means the unit
+    # cannot be verified, which is a refusal rather than a pass.
+    save_run(memory_db, _clean_run())
 
     # NEEDS_REVIEW -> APPROVED (triggers ledger freeze)
     lifecycle.transition(memory_db, u, Status.APPROVED, actor="reviewer")

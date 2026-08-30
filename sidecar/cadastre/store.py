@@ -6,11 +6,16 @@ import shapely.geometry
 import shapely.wkb
 
 from .models import (
+    Accuracy,
     CreatedBy,
     DisputeState,
+    Finding,
     ModelProvenance,
     Relationship,
+    RelType,
     Representation,
+    RuleId,
+    Severity,
     Status,
     Unit,
     UnitType,
@@ -220,3 +225,151 @@ def save_relationship(conn: sqlite3.Connection, rel: Relationship) -> None:
     )
     conn.commit()
 
+
+
+# --- validation results -------------------------------------------------------------
+#
+# The `finding` and `validation_run` tables were defined from the start but nothing wrote
+# to them, so validation was computed in memory and discarded. That left the approval
+# guard with nothing to consult and no reviewer able to acknowledge a warning.
+
+
+class ProjectIncomplete(RuntimeError):
+    """The GeoPackage is missing tables the ingest block is responsible for writing."""
+
+
+def _iso(v: datetime | None) -> str | None:
+    return v.isoformat() if v else None
+
+
+def _dt(v: str | None) -> datetime | None:
+    return datetime.fromisoformat(v) if v else None
+
+
+def save_run(conn: sqlite3.Connection, run) -> None:
+    """Persist a validation run and every finding it produced."""
+    conn.execute(
+        "INSERT OR REPLACE INTO validation_run "
+        "(run_id, started_at, finished_at, ruleset_version, scope) VALUES (?,?,?,?,?)",
+        (run.run_id, _iso(run.started_at), _iso(run.finished_at),
+         run.ruleset_version, getattr(run, "scope", None)),
+    )
+    conn.executemany(
+        "INSERT OR REPLACE INTO finding (finding_id, run_id, rule_id, severity, unit_id, "
+        "related_unit_ids, message, suggested_action, affected_geometry, measured_value, "
+        "tolerance, detected_at, acknowledged_by, acknowledged_at, resolved_by, "
+        "resolution_note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [(f.finding_id, f.run_id, f.rule_id.value, f.severity.value, f.unit_id,
+          json.dumps(f.related_unit_ids), f.message, f.suggested_action,
+          json.dumps(f.affected_geometry) if f.affected_geometry else None,
+          f.measured_value, f.tolerance, _iso(f.detected_at), f.acknowledged_by,
+          _iso(f.acknowledged_at), f.resolved_by, f.resolution_note)
+         for f in run.findings],
+    )
+    conn.commit()
+
+
+def _finding_from_row(r: sqlite3.Row) -> Finding:
+    return Finding(
+        finding_id=r["finding_id"], run_id=r["run_id"], rule_id=RuleId(r["rule_id"]),
+        severity=Severity(r["severity"]), unit_id=r["unit_id"], message=r["message"],
+        detected_at=_dt(r["detected_at"]),
+        related_unit_ids=json.loads(r["related_unit_ids"] or "[]"),
+        suggested_action=r["suggested_action"],
+        affected_geometry=json.loads(r["affected_geometry"]) if r["affected_geometry"] else None,
+        measured_value=r["measured_value"], tolerance=r["tolerance"],
+        acknowledged_by=r["acknowledged_by"], acknowledged_at=_dt(r["acknowledged_at"]),
+        resolved_by=r["resolved_by"], resolution_note=r["resolution_note"],
+    )
+
+
+def get_findings(conn: sqlite3.Connection, run_id: str) -> list[Finding]:
+    rows = conn.execute("SELECT * FROM finding WHERE run_id = ?", (run_id,)).fetchall()
+    return [_finding_from_row(r) for r in rows]
+
+
+def load_latest_run(conn: sqlite3.Connection):
+    """The most recent validation run, or None if validation has never been recorded.
+
+    None means "we cannot verify this unit", and callers must treat it as a refusal
+    rather than as an absence of problems.
+    """
+    from .validate.engine import ValidationRun
+
+    row = conn.execute(
+        "SELECT * FROM validation_run ORDER BY started_at DESC, rowid DESC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        return None
+    return ValidationRun(
+        run_id=row["run_id"], started_at=_dt(row["started_at"]),
+        finished_at=_dt(row["finished_at"]), ruleset_version=row["ruleset_version"],
+        findings=get_findings(conn, row["run_id"]),
+    )
+
+
+def acknowledge_finding(conn: sqlite3.Connection, finding_id: str, actor: str) -> None:
+    """Record that a reviewer has seen a warning and accepts it.
+
+    Only warnings are acknowledgeable. An error is not something a reviewer may wave
+    through - it must be fixed and validation re-run.
+    """
+    row = conn.execute("SELECT severity FROM finding WHERE finding_id = ?",
+                       (finding_id,)).fetchone()
+    if row is None:
+        raise KeyError(f"no finding {finding_id}")
+    if row["severity"] == Severity.ERROR.value:
+        raise ValueError(
+            f"{finding_id} is an error, which cannot be acknowledged. Correct the unit "
+            "and re-run validation.")
+    conn.execute(
+        "UPDATE finding SET acknowledged_by = ?, acknowledged_at = ? WHERE finding_id = ?",
+        (actor, _iso(datetime.now(UTC)), finding_id),
+    )
+    conn.commit()
+
+
+def load_project(conn: sqlite3.Connection):
+    """Read a whole project back for validation: units, relationships, sources, settings.
+
+    `source` and `project_settings` are written by the ingest block, not by us. Their
+    absence is a real condition - an empty or partially built GeoPackage - and is
+    reported rather than papered over with defaults, because a made-up project CRS or a
+    made-up accuracy would silently change every result.
+    """
+    from .loader import settings_from_dict
+
+    unit_ids = [r["unit_id"] for r in conn.execute("SELECT unit_id FROM unit")]
+    units = [u for u in (get_unit(conn, uid) for uid in unit_ids) if u is not None]
+
+    rels = [
+        Relationship(r["from_unit_id"], r["to_unit_id"], RelType(r["rel_type"]),
+                     _dt(r["created_at"]))
+        for r in conn.execute("SELECT * FROM unit_relationship")
+    ]
+
+    try:
+        rows = conn.execute(
+            "SELECT source_id, horizontal_accuracy_m, vertical_accuracy_m FROM source"
+        ).fetchall()
+    except sqlite3.OperationalError as err:
+        raise ProjectIncomplete(
+            "no `source` table - the ingest block has not written the source registry. "
+            "Validation tolerances are derived from it and cannot be guessed.") from err
+    sources = {
+        r["source_id"]: (
+            Accuracy(r["horizontal_accuracy_m"], r["vertical_accuracy_m"])
+            if r["horizontal_accuracy_m"] is not None
+            and r["vertical_accuracy_m"] is not None else None
+        )
+        for r in rows
+    }
+
+    try:
+        row = conn.execute("SELECT * FROM project_settings LIMIT 1").fetchone()
+    except sqlite3.OperationalError as err:
+        raise ProjectIncomplete("no `project_settings` table") from err
+    if row is None:
+        raise ProjectIncomplete("`project_settings` is empty")
+
+    return units, rels, sources, settings_from_dict(dict(row))

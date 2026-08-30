@@ -76,6 +76,12 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
      "provisional sequences colliding with allocated ones"),
     ("ulpin/ledger.py", "        if not parent_ulpin_14:", "        if False:",
      "units minted under a parcel nobody chose"),
+    ("ulpin/lifecycle.py", "        if run is None:", "        if False:",
+     "approval permitted with no validation recorded"),
+    ("ulpin/lifecycle.py", "        if not run.approvable(unit.unit_id):", "        if False:",
+     "approval permitted despite errors or unacknowledged warnings"),
+    ("store.py", '    if row["severity"] == Severity.ERROR.value:', "    if False:",
+     "errors acknowledged away instead of fixed"),
 ]
 
 

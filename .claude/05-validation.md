@@ -167,3 +167,15 @@ Extrusion mutations, all of which must also fail:
 
 **A rule whose deletion does not fail a test is not being tested.** Run the battery after
 changing any rule, threshold or estimator.
+
+
+## Results are persisted, not just computed
+
+`store.save_run` writes the run and every finding; `store.load_latest_run` reads the most
+recent one back. Only the latest run counts, so re-validating after a fix can clear an
+earlier error.
+
+Nothing wrote to those tables for a while even though the schema defined them, which is
+what left the approval guard with nothing to consult and gave a reviewer nowhere to record
+an acknowledgement. A table that exists but is never written is indistinguishable from a
+missing feature — and worse, it reads as though the feature is there.
