@@ -31,7 +31,7 @@ The ingestion pipeline produces the harmonized GeoPackage (`.gpkg`) consumed by 
 - **`building_footprint` layer** — Stores `building_local_id`, `parcel_local_id` (optional), `source_id` (FK → `source`), and `geom` (POLYGON in metres).
 - **`utility_line` layer** — Stores `utility_local_id`, `utility_kind`, `stratum`, `depth_top_m`, `depth_bottom_m`, `corridor_width_m`, `source_id`, and `geom` (LINESTRING).
 - **`source` registry table** — **Mandatory accuracy driver for P4 validation.** Stores `source_id`, `source_type`, `crs`, `vertical_datum`, **`horizontal_accuracy_m`**, **`vertical_accuracy_m`**, `coverage_wkt`, and `processing_status`. P4 derives all geometric tolerances from these accuracy bounds: $tol = k \cdot \sqrt{acc_a^2 + acc_b^2}$.
-- **`project_settings` table** — Single-row table persisting `project_crs`, `vertical_datum`, stratum height limits (`-30 m` / `+150 m`), default plinth offsets (`0.6 m`), parapet deductions (`1.0 m`), `ulpin_version`, and `ruleset_version`.
+- **`project_settings` table** — Single-row table persisting `project_crs` (`EPSG:32643`), `vertical_datum` (`EGM2008`), stratum height limits (`-30 m` / `+150 m`), default plinth offsets (`0.6 m`), parapet deductions (`0.0 m`), `ulpin_version` (`v1`), and `ruleset_version` (`r1`).
 
 ## Decisions
 
@@ -41,6 +41,6 @@ The ingestion pipeline produces the harmonized GeoPackage (`.gpkg`) consumed by 
 - **Single-column geometry naming (`geom`)** — Standardizes all GeoDataFrame geometry columns to `geom` matching the contract schema.
 - **Dynamic Surveyor Attribute Mapping** — Provides `column_mapping` parameter on `process_file()` to map arbitrary surveyor column names (e.g. `survey_no`) directly to contract attributes (`parent_ulpin_14`).
 
-## Observed state (2026-08-29)
+## Observed state (2026-08-30)
 
 Core engine fully implemented and passing 10/10 automated integration and robustness tests (`tests/test_p2_pipeline.py`, `tests/test_p2_robustness.py`, `tests/test_p2_advanced.py`). Verified end-to-end: WGS84 parsing, UTM metric reprojection, utility line corridor creation, empty GeoDataFrame handling, and SQLite schema contract compliance.
