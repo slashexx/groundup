@@ -65,6 +65,36 @@ next build with no coordination needed.
 - Fully offline by construction: no Cesium Ion, no external tiles/glyphs/fonts;
   `vite-plugin-cesium` bundles Cesium's static assets.
 
+## Live data (added 2026-09-02)
+
+`src/demo/App.tsx` reads `VITE_CADASTRE_API`. Unset — the default — nothing is fetched and
+the bundled fixture renders exactly as before, so *offline by construction* still holds.
+Set it and the demo fetches `GET /cadastre/document`, which serves the same shape:
+
+```bash
+VITE_CADASTRE_API=http://127.0.0.1:8000 pnpm dev
+```
+
+- `adapter.ts` now reads `doc.findings ?? doc.expected_findings`. P4 emits both keys, so
+  the fixture and the endpoint are interchangeable with no coordinated change.
+- The header line reports which source is in use, and says so loudly if the fetch fails
+  rather than rendering the fixture as though it were the project.
+- The slice slider re-derives its range when the document changes; a live project has a
+  different height range from the fixture's and the slider otherwise sits outside its own
+  bounds after the fetch lands.
+
+## Unresolved: there are two P5 implementations
+
+`phase5/` (Pragati) is a second viewer, undocumented until now. It reads its own
+hand-authored `src/data/units.geojson` in WGS84 rather than `contracts/`, pins
+**maplibre-gl v6** — the version this file documents as silently blanking the map under
+Vite — and carries the `netlify.toml` that deploys the demo. Its data file describes
+itself as "the proposed P4→P5 contract", which dates it to before the real one landed.
+
+Only `viewer/` consumes the committed contract, so only `viewer/` was wired to the live
+endpoint. **Which of the two is the deliverable is a team decision that has not been
+made**, and nothing downstream should be built against both.
+
 ## Observed state (2026-08-29)
 
 Components render the committed fixture end-to-end (search → cross-view highlight →

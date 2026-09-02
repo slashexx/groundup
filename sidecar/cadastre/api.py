@@ -6,10 +6,12 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from . import validate
+from . import export, ingest_gpkg, validate
 from .store import (
+    ProjectIncomplete,
     acknowledge_finding,
     get_unit,
+    init_schema,
     load_latest_run,
     load_project,
     save_run,
@@ -115,7 +117,7 @@ def run_validation(req: ValidationRequest) -> dict[str, Any]:
     try:
         units, rels, sources, settings = load_project(conn)
         result = validate.run(units, rels, sources, settings)
-        save_run(conn, result)
+        save_run(conn, result, [u.unit_id for u in units])
         by_severity: dict[str, int] = {}
         for f in result.findings:
             by_severity[f.severity.value] = by_severity.get(f.severity.value, 0) + 1
@@ -180,10 +182,59 @@ def lookup_ulpin(ulpin: str, db_path: str = "pilot.gpkg") -> dict[str, Any]:
 
 
 def _finding_json(f) -> dict[str, Any]:
-    return {"finding_id": f.finding_id, "rule_id": f.rule_id.value,
-            "severity": f.severity.value, "unit_id": f.unit_id,
-            "related_unit_ids": f.related_unit_ids, "message": f.message,
-            "suggested_action": f.suggested_action,
-            "affected_geometry": f.affected_geometry,
-            "measured_value": f.measured_value, "tolerance": f.tolerance,
-            "acknowledged_by": f.acknowledged_by}
+    return export.finding_to_dict(f)
+
+
+# --- integration surface ------------------------------------------------------------
+#
+# Two routes the rest of the team consumes: one that turns P2's harmonized GeoPackage
+# into units, and one that hands P5 and P6 the whole project in the outbound contract
+# shape. Together they are the difference between a block that passes its own tests and
+# a block the other five can actually reach.
+
+
+@router.post("/ingest")
+def ingest_geopackage(req: ValidationRequest) -> dict[str, Any]:
+    """Import P2's `parcel`, `building_footprint` and `utility_line` layers.
+
+    Repeatable: a unit already imported keeps the `unit_id` it was allocated, so running
+    this again after P2 adds a layer does not mint a second identity for the same parcel.
+    """
+    conn = sqlite3.connect(req.db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        init_schema(conn)
+        settings = load_project(conn)[3]
+        report = ingest_gpkg.import_project(conn, settings)
+        return {
+            "units": len(report.units),
+            "created": report.created,
+            "reused": report.reused,
+            "relationships": len(report.relationships),
+            "provisional_ulpins": report.minted,
+            "unresolved_buildings": report.unresolved,
+        }
+    except (ingest_gpkg.LayerMissing, ProjectIncomplete) as err:
+        raise HTTPException(422, str(err)) from err
+    finally:
+        conn.close()
+
+
+@router.get("/document")
+def project_document(db_path: str = "pilot.gpkg") -> dict[str, Any]:
+    """The whole project in the outbound contract shape, findings included.
+
+    This is what P5's `fromP4Document()` already knows how to read, so pointing the
+    viewer at this URL replaces the committed fixture with live data and nothing else
+    has to change.
+    """
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        units, rels, _sources, settings = load_project(conn)
+        run = load_latest_run(conn)
+        return export.document(settings, units, rels, run.findings if run else [])
+    except ProjectIncomplete as err:
+        raise HTTPException(422, str(err)) from err
+    finally:
+        conn.close()

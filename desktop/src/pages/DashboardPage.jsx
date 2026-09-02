@@ -4,6 +4,8 @@ import {
   mockDashboardKPIs, mockUploadStatus, mockJobs, mockErrors,
   mockRecordsByStatus, mockHistory
 } from '../data/mockData';
+import { dashboardCounts } from '../data/cadastreApi';
+import { DataSourceBanner, useCadastreDocument } from '../data/useCadastre';
 
 const iconMap = {
   parcel: Icons.Parcel,
@@ -106,14 +108,58 @@ function DonutChart({ data, total }) {
 
 export default function DashboardPage({ project }) {
   const navigate = useNavigate();
-  const statusData = {
-    Draft: mockRecordsByStatus.draft,
-    Processing: mockRecordsByStatus.processing,
-    'Needs Review': mockRecordsByStatus.needsReview,
-    Approved: mockRecordsByStatus.approved,
-    Replaced: mockRecordsByStatus.replaced,
-    Closed: mockRecordsByStatus.closed,
-  };
+  const { doc, live, status: loadStatus, error: loadError, reload } = useCadastreDocument();
+
+  const counts = live && doc ? dashboardCounts(doc) : null;
+
+  const statusData = counts
+    ? {
+      Draft: counts.draft,
+      Processing: 0,
+      'Needs Review': counts.needsReview,
+      Approved: counts.approved,
+      Replaced: 0,
+      Closed: 0,
+    }
+    : {
+      Draft: mockRecordsByStatus.draft,
+      Processing: mockRecordsByStatus.processing,
+      'Needs Review': mockRecordsByStatus.needsReview,
+      Approved: mockRecordsByStatus.approved,
+      Replaced: mockRecordsByStatus.replaced,
+      Closed: mockRecordsByStatus.closed,
+    };
+
+  // Counted from the project document rather than written into the source. The last
+  // tile has no mock equivalent: it is FR-03 made visible — units whose height is
+  // genuinely unknown, which the system records as absent instead of guessing.
+  const kpis = counts
+    ? [
+      { label: 'Land Parcels', value: String(counts.parcels) },
+      { label: 'Buildings / Floors', value: `${counts.buildings} / ${counts.floors}` },
+      { label: '3D Property Units', value: String(counts.total) },
+      { label: 'Underground / Elevated', value: `${counts.underground} / ${counts.elevated}` },
+      { label: 'Pending Review', value: String(counts.needsReview) },
+      { label: 'Errors / Warnings', value: `${counts.errors} / ${counts.warnings}` },
+      { label: 'Height Unknown', value: String(counts.unknownHeight) },
+    ]
+    : mockDashboardKPIs;
+
+  // Errors first — the alert list is triage, and a warning above an error is noise.
+  const recentAlerts = live && doc
+    ? [...(doc.findings ?? [])]
+      .sort((a, b) => {
+        const rank = { error: 0, warning: 1, info: 2 };
+        return rank[a.severity] - rank[b.severity];
+      })
+      .slice(0, 3)
+      .map(f => ({
+        text: `${f.unit_id} — ${f.message}`,
+        severity: f.severity,
+        acknowledged: f.acknowledged_by,
+        detected: f.detected_at?.replace('T', ' ').slice(0, 16) ?? '—',
+      }))
+    : mockErrors.recent.map(e => ({ ...e, acknowledged: null, detected: '29 May 2025, 09:45 AM' }));
 
   const statusClass = (s) => {
     const map = { Completed: 'completed', 'In Progress': 'in-progress', Queued: 'queued' };
@@ -122,9 +168,11 @@ export default function DashboardPage({ project }) {
 
   return (
     <div className="dashboard" style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, width: '100%', overflow: 'hidden', padding: '16px 0 0 0' }}>
+      <DataSourceBanner status={loadStatus} error={loadError} onRetry={reload} />
+
       {/* KPI Cards */}
       <div className="dashboard-kpis">
-        {mockDashboardKPIs.map((kpi, i) => {
+        {kpis.map((kpi, i) => {
           return (
             <div className="kpi-card" key={i}>
               <div className="kpi-value">{kpi.value}</div>
@@ -187,12 +235,12 @@ export default function DashboardPage({ project }) {
               </tr>
             </thead>
             <tbody>
-              {mockErrors.recent.map((err, i) => (
+              {recentAlerts.map((err, i) => (
                 <tr key={i}>
                   <td style={{ color: 'var(--text-primary)' }}>{err.text}</td>
                   <td style={{ textTransform: 'capitalize' }}>{err.severity}</td>
-                  <td>Open</td>
-                  <td>29 May 2025, 09:45 AM</td>
+                  <td>{err.acknowledged ? `Acknowledged by ${err.acknowledged}` : 'Open'}</td>
+                  <td>{err.detected}</td>
                   <td><span className="list-table-action" onClick={() => navigate('/errors')}>Open</span></td>
                 </tr>
               ))}

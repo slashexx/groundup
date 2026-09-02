@@ -178,3 +178,43 @@ ceremonial.
 > Start with `validate/`, not `extrude/`. The fixture already provides its complete input
 > and expected output, so the engine can be written test-first and be green before any
 > raster code exists.
+
+## Attaching a footprint to its parcel
+
+`ingest_gpkg.MAJORITY = 0.5`. A building is assigned to a parcel only when that parcel
+holds **strictly more than half** of the footprint's area.
+
+The obvious rule — attach to any parcel the footprint `intersects` — makes almost every
+building ambiguous. Footprints and parcel boundaries come from different sources with
+different accuracies, so a metre of slop along a shared boundary is the normal case, and
+that sliver clips the neighbour. A reviewer who has to dismiss an ambiguity on every
+single building stops reading them, which is the same failure mode tolerance derivation
+exists to prevent.
+
+A majority share has a property a "largest share wins" rule does not: **two parcels
+cannot both hold more than half of the same footprint**, so the winner is unique by
+construction and there is never a tie to break by preference or read order. A building
+genuinely straddling a boundary reaches no majority anywhere and is reported unresolved
+with the largest share it did find — which is the honest answer, and the case a human
+should look at.
+
+`parcel_local_id`, when P2 supplies one, takes precedence: P2 knows something we do not.
+When it names a parcel that is not in the file, that is **reported, not silently replaced
+with a spatial guess** — the mismatch is the interesting fact, and quietly resolving it
+would hide a real defect in the upstream data.
+
+## Validation state is written back, not just computed
+
+`store.save_run` updates `unit.validation_state` for every unit the run covered.
+
+This was missing: the run and its findings were persisted, but the column stayed at its
+`unvalidated` default forever. The column is outbound contract surface — it is what P5
+colours the map by and what P1's review queue sorts on — so a project with three errors
+was displayed everywhere as one that had never been checked. The findings were right and
+invisible.
+
+`save_run` takes the unit ids the run actually covered. Without them the run is treated
+as project-wide, which is what `validate.run` does today. **A scoped run must pass its
+own ids**: marking a unit passed on the strength of a run that never looked at it is the
+same class of error as approving one with no run at all, and `lifecycle.transition`
+consults exactly this state.

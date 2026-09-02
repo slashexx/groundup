@@ -15,6 +15,7 @@ import ExportPage from "./pages/ExportPage";
 import HistoryPage from "./pages/HistoryPage";
 import SettingsPage from "./pages/SettingsPage";
 import { mockProjects, mockUser } from "./data/mockData";
+import { CadastreProvider } from "./data/useCadastre";
 
 export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
@@ -39,7 +40,10 @@ export default function App() {
     );
   }
 
+  // One document for the whole session: the shell and the page it frames must never
+  // disagree about whether they are showing the real project.
   return (
+    <CadastreProvider>
     <AppShell project={selectedProject} user={user} onChangeProject={() => setSelectedProject(null)} onLogout={() => { setIsLoggedIn(false); setSelectedProject(null); }}>
       <Routes>
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
@@ -58,5 +62,6 @@ export default function App() {
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
     </AppShell>
+    </CadastreProvider>
   );
 }

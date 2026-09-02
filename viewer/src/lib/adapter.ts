@@ -53,6 +53,9 @@ export interface FixtureDocument {
   project?: { stratum_below_limit_m?: number }
   units: RawUnit[]
   relationships?: RawRelationship[]
+  /** Live results from P4's `/cadastre/document`. */
+  findings?: RawFinding[]
+  /** The committed fixture's name for the same array — there they are expectations. */
   expected_findings?: RawFinding[]
 }
 
@@ -102,7 +105,7 @@ export function fromP4Document(doc: FixtureDocument): ViewerUnit[] {
   }
 
   const findingsFor = new Map<string, Finding[]>()
-  for (const f of doc.expected_findings ?? []) {
+  for (const f of doc.findings ?? doc.expected_findings ?? []) {
     const list = findingsFor.get(f.unit_id) ?? []
     list.push({
       rule_id: f.rule_id,

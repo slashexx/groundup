@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { FixtureDocument, UnitFilter } from '../lib/index.ts'
 import {
   DetailsPanel,
@@ -14,8 +14,44 @@ import {
 // deliberately planted. Bundled at build time so the demo needs no server.
 import demoParcel from '../../../contracts/fixtures/demo-parcel.json'
 
+// Live data from P4, when a sidecar is running. Unset by default so the demo stays
+// offline by construction — the fixture is bundled and nothing is fetched. Point it at
+// the sidecar to render a real project instead:
+//
+//     VITE_CADASTRE_API=http://127.0.0.1:8000 pnpm dev
+//
+// The endpoint serves the same shape as the fixture, so `fromP4Document` is unchanged.
+const API = import.meta.env.VITE_CADASTRE_API as string | undefined
+const DB = (import.meta.env.VITE_CADASTRE_DB as string | undefined) ?? 'pilot.gpkg'
+
 export default function App() {
-  const units = useMemo(() => fromP4Document(demoParcel as unknown as FixtureDocument), [])
+  const [doc, setDoc] = useState<FixtureDocument>(demoParcel as unknown as FixtureDocument)
+  const [source, setSource] = useState(API ? 'connecting…' : 'demo-parcel fixture')
+
+  useEffect(() => {
+    if (!API) return
+    const url = `${API}/cadastre/document?db_path=${encodeURIComponent(DB)}`
+    let live = true
+    fetch(url)
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`${r.status} ${(await r.text()).slice(0, 200)}`)
+        return r.json() as Promise<FixtureDocument>
+      })
+      .then((d) => {
+        if (!live) return
+        setDoc(d)
+        setSource(`live · ${DB} · ${d.units.length} units`)
+      })
+      .catch((e: Error) => {
+        // Say so rather than silently rendering the fixture as if it were the project.
+        if (live) setSource(`live fetch failed (${e.message}) — showing fixture`)
+      })
+    return () => {
+      live = false
+    }
+  }, [])
+
+  const units = useMemo(() => fromP4Document(doc), [doc])
   const [sliceMin, sliceMax] = useMemo(() => heightRangeOf(units), [units])
 
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -24,12 +60,23 @@ export default function App() {
   const [sliceHeight, setSliceHeight] = useState(sliceMax)
   const [showUnderground, setShowUnderground] = useState(false)
 
+  // A live document has a different height range from the fixture's, so the slider has
+  // to follow it or it sits outside its own bounds once the fetch lands. Adjusted during
+  // render rather than in an effect: an effect would paint the stale value first and
+  // then trigger a second render to correct it.
+  const [renderedDoc, setRenderedDoc] = useState(doc)
+  if (renderedDoc !== doc) {
+    setRenderedDoc(doc)
+    setSliceHeight(sliceMax)
+    setSelectedId(null)
+  }
+
   return (
     <div className="app">
       <header className="app-header">
         <div className="app-title">
           <h1>groundup · 3D ULPIN Viewer</h1>
-          <span>demo-parcel fixture · fully offline</span>
+          <span>{API ? source : `${source} · fully offline`}</span>
         </div>
         <SearchFilter
           units={units}

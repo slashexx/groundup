@@ -63,3 +63,50 @@ precision we care about.
 
 `contracts/fixtures/demo-parcel.json` — see `05-validation.md`. It is a contract in
 practice: downstream teams build against it before our real code exists.
+
+## The integration surface
+
+Schemas describe shapes. These are the routes that actually move them between blocks,
+added when P1, P2, P4 and P5 were first wired together.
+
+### `POST /cadastre/ingest` — P2 → P4
+
+Reads P2's `parcel`, `building_footprint` and `utility_line` layers out of the project
+GeoPackage and persists them as units and `contains` relationships. Implemented in
+`sidecar/cadastre/ingest_gpkg.py`. Three refusals are load-bearing and each has a
+mutation guarding it:
+
+- A parcel with no `parent_ulpin_14` gets **no provisional ULPIN at all**, rather than
+  one minted under a placeholder parent.
+- Imported units have **no height**. P2 registers rasters but does not deliver DEM/DSM
+  through the GeoPackage, so `lower_limit`/`upper_limit` are `None` and
+  `attributes.heights_unavailable` says why. `extrude` fills them in when rasters exist.
+- A building is attached to a parcel only when that parcel holds **more than half** its
+  footprint. See `03-design.md` for why the threshold is a share rather than
+  `intersects`.
+
+Re-running the import is safe: `unit_id` is looked up by `attributes.local_id`, never
+re-derived, so a second run reuses the identities the first one allocated.
+
+### `GET /cadastre/document` — P4 → P5, P6, P1
+
+The whole project in one payload: `project`, `units`, `relationships`, `findings`. It is
+**the same shape as `contracts/fixtures/demo-parcel.json`**, which is what makes it a
+drop-in replacement for the fixture in P5's `fromP4Document()`.
+
+Findings are published under both `findings` and `expected_findings`. The fixture uses
+the latter because there they are an *expectation*; live they are a *result*. Emitting
+both means a consumer written against the fixture works against the endpoint with no
+coordinated change. `viewer/src/lib/adapter.ts` reads `findings ?? expected_findings`.
+
+### The application object
+
+`sidecar/cadastre/app.py` is the ASGI app. **`api.router` is an `APIRouter`, not an
+application**: uvicorn starts with it as a target — it is technically an ASGI callable —
+and then answers **500 on every route**. The README documented that command for a while
+and it never worked. Run `cadastre.app:app`.
+
+CORS is an explicit origin list (the Tauri devUrl `:1420`, Vite `:5173`, packaged
+`tauri://localhost`), not `*`: the sidecar listens on localhost while a browser is open
+on the same machine, and a wildcard would let any page the reviewer visits read the
+project.

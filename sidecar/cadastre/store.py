@@ -246,8 +246,20 @@ def _dt(v: str | None) -> datetime | None:
     return datetime.fromisoformat(v) if v else None
 
 
-def save_run(conn: sqlite3.Connection, run) -> None:
-    """Persist a validation run and every finding it produced."""
+def save_run(conn: sqlite3.Connection, run, validated_unit_ids: list[str] | None = None) -> None:
+    """Persist a validation run, every finding it produced, and the resulting states.
+
+    Writing `unit.validation_state` back is not bookkeeping. The column is part of the
+    outbound contract and is what a reviewer sorts by and what P5 colours the map by;
+    leaving it at its `unvalidated` default after a run that found three errors makes
+    every consumer show a project that has never been checked.
+
+    `validated_unit_ids` names what the run actually covered. Without it the run is
+    taken to be project-wide - which is what `validate.run` does today - and a unit with
+    no findings is genuinely passed. A scoped run must pass its own ids, because marking
+    a unit passed on the strength of a run that never looked at it is the same class of
+    error as approving one with no run at all.
+    """
     conn.execute(
         "INSERT OR REPLACE INTO validation_run "
         "(run_id, started_at, finished_at, ruleset_version, scope) VALUES (?,?,?,?,?)",
@@ -265,6 +277,16 @@ def save_run(conn: sqlite3.Connection, run) -> None:
           f.measured_value, f.tolerance, _iso(f.detected_at), f.acknowledged_by,
           _iso(f.acknowledged_at), f.resolved_by, f.resolution_note)
          for f in run.findings],
+    )
+
+    covered = (
+        validated_unit_ids
+        if validated_unit_ids is not None
+        else [r["unit_id"] for r in conn.execute("SELECT unit_id FROM unit")]
+    )
+    conn.executemany(
+        "UPDATE unit SET validation_state = ? WHERE unit_id = ?",
+        [(run.state_of(uid).value, uid) for uid in covered],
     )
     conn.commit()
 
