@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import * as Cesium from 'cesium'
 import type { Viewer3DProps, ViewerUnit } from './types'
-import { GROUND_COLOR, OUTLINE_COLOR, SELECT_COLOR, unitColor } from './theme'
-import { matchesFilter } from './filter'
+import { CUT_COLOR, GROUND_COLOR, OUTLINE_COLOR, SELECT_COLOR, unitColor } from './theme'
+import { bboxOf, matchesFilter } from './filter'
+
+const CUT_TRACE_ID = '__cut_trace'
 
 function createOfflineViewer(container: HTMLDivElement): Cesium.Viewer {
   // No Ion token, no imagery, flat ellipsoid terrain: zero network calls.
@@ -74,10 +76,11 @@ export function Viewer3D(props: Viewer3DProps) {
     const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas)
     handler.setInputAction((movement: Cesium.ScreenSpaceEventHandler.PositionedEvent) => {
       const picked = viewer.scene.pick(movement.position)
-      const id =
+      let id =
         Cesium.defined(picked) && picked.id instanceof Cesium.Entity
           ? (picked.id.id as string)
           : null
+      if (id?.startsWith('__')) id = null // scene furniture (cut trace) is not a unit
       selfPickRef.current = id
       onSelectRef.current(id)
     }, Cesium.ScreenSpaceEventType.LEFT_CLICK)
@@ -134,6 +137,33 @@ export function Viewer3D(props: Viewer3DProps) {
     viewer.scene.requestRender()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [units, filter, sliceHeight, showUnderground, ready])
+
+  // Section-cut trace: the cut drawn in the scene, like the red cut line on a
+  // section drawing — a rectangle outline at the slice elevation over the block.
+  useEffect(() => {
+    const viewer = viewerRef.current
+    if (!viewer || !ready) return
+    const existing = viewer.entities.getById(CUT_TRACE_ID)
+    if (existing) viewer.entities.remove(existing)
+    if (sliceHeight == null || units.length === 0) return
+    const bbox = bboxOf(units)
+    if (!bbox) return
+    const [w, s, e, n] = bbox
+    const mx = (e - w) * 0.12
+    const my = (n - s) * 0.12
+    viewer.entities.add({
+      id: CUT_TRACE_ID,
+      rectangle: {
+        coordinates: Cesium.Rectangle.fromDegrees(w - mx, s - my, e + mx, n + my),
+        height: sliceHeight,
+        fill: false,
+        outline: true,
+        outlineColor: Cesium.Color.fromCssColorString(CUT_COLOR),
+        outlineWidth: 2,
+      },
+    })
+    viewer.scene.requestRender()
+  }, [sliceHeight, units, ready])
 
   // See-through ground so below-grade units are visible and clickable.
   useEffect(() => {

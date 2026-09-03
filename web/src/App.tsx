@@ -6,11 +6,12 @@ import {
   heightRangeOf,
   Map2D,
   SearchFilter,
+  unitColor,
   VALIDATION_COLORS,
   VALIDATION_LABELS,
   Viewer3D,
 } from '@viewer'
-import { Gauge } from './Gauge.tsx'
+import { Gauge, type GaugeSpan } from './Gauge.tsx'
 
 interface Manifest {
   exported_at?: string
@@ -82,6 +83,21 @@ export default function App() {
   const sceneFilter = useMemo(
     () => ({ types: filter.types, validation: filter.validation }),
     [filter.types, filter.validation],
+  )
+  // Strata registry for the gauge: every volume's real span, excluding parcels
+  // (ground slab) and building envelopes (they duplicate their floors).
+  const gaugeSpans = useMemo<GaugeSpan[]>(
+    () =>
+      units
+        .filter(
+          (u) =>
+            u.unit_type !== 'land_parcel' &&
+            u.unit_type !== 'building' &&
+            u.base_m != null &&
+            u.top_m != null,
+        )
+        .map((u) => ({ id: u.unit_id, base: u.base_m!, top: u.top_m!, color: unitColor(u) })),
+    [units],
   )
   const floorMarks = useMemo(
     () =>
@@ -161,6 +177,10 @@ export default function App() {
       <aside className={`plan ${planLarge ? 'large' : ''}`}>
         <div className="plan-head">
           <span className="sheet-label">plan · pilot block</span>
+          <svg className="north" viewBox="0 0 12 16" aria-label="North" role="img">
+            <path d="M6 1 L9 11 L6 8.6 L3 11 Z" fill="currentColor" />
+            <text x="6" y="15.5" textAnchor="middle" fontSize="5.5" fill="currentColor" fontFamily="inherit">N</text>
+          </svg>
           <button
             type="button"
             className="plan-zoom"
@@ -187,6 +207,8 @@ export default function App() {
         min={gaugeMin}
         max={gaugeMax}
         floors={floorMarks}
+        spans={gaugeSpans}
+        selectedId={selectedId}
         value={cutHeight}
         cutEnabled={cutOn}
         showUnderground={showUnderground}

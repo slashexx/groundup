@@ -66,6 +66,13 @@ deploys, not yet CI).
   hatched below-grade zone, floor ticks derived from the data) whose draggable red handle
   IS the section cut; red is reserved for the cut. System font stacks only — the
   offline/zero-request rule outweighed the font pairing a design pass suggested.
+- **Every instrument reads the same datum** (brilliance pass, same day): the cut is drawn
+  *in the scene* as a red section-trace rectangle at the slice elevation (P5's Viewer3D
+  owns it; entity ids prefixed `__` are scene furniture and never selectable); the gauge
+  carries a **strata registry** — every volume's real vertical span as a hairline-articulated
+  bar in its validation color, with the selected unit's span in amber; the plan sheet has
+  survey registration marks and a north arrow; panels settle in a 320 ms staggered load
+  sequence (reduced-motion respected).
 - **Search selects, it does not cull**: the query drives Enter-to-select and is stripped
   from the filter passed to the viewers, so spatial context never disappears. Type and
   validation chips still filter the scene.

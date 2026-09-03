@@ -1,10 +1,20 @@
 import { useCallback, useRef } from 'react'
 
+export interface GaugeSpan {
+  id: string
+  base: number
+  top: number
+  color: string
+}
+
 interface GaugeProps {
   min: number
   max: number
   /** Distinct floor base heights (display metres) — drawn as tick dashes. */
   floors: number[]
+  /** Every recorded volume's vertical span — the block's strata registry. */
+  spans: GaugeSpan[]
+  selectedId: string | null
   value: number
   cutEnabled: boolean
   showUnderground: boolean
@@ -24,6 +34,8 @@ export function Gauge({
   min,
   max,
   floors,
+  spans,
+  selectedId,
   value,
   cutEnabled,
   showUnderground,
@@ -104,6 +116,19 @@ export function Gauge({
 
         {floors.map((f) => (
           <div key={f} className="gauge-floor" style={{ top: `${topPct(f)}%` }} />
+        ))}
+
+        {/* strata registry: each volume's real vertical span */}
+        {spans.map((s) => (
+          <div
+            key={s.id}
+            className={`gauge-span ${s.id === selectedId ? 'sel' : ''}`}
+            style={{
+              top: `${topPct(s.top)}%`,
+              height: `${((s.top - s.base) / span) * 100}%`,
+              background: s.id === selectedId ? undefined : s.color,
+            }}
+          />
         ))}
 
         {cutEnabled && (
