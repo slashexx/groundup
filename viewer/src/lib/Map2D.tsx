@@ -212,7 +212,10 @@ export function Map2D({ units, selectedId, filter, onSelect }: ViewerProps) {
         const unit = findUnit(units, selectedId)
         if (unit) {
           const bbox = bboxOf([unit])
-          if (bbox) map.fitBounds(bbox, { padding: 120, duration: 600, maxZoom: 18.5 })
+          // padding larger than the canvas makes fitBounds misbehave on small maps
+          const canvas = map.getCanvas()
+          const pad = Math.min(120, Math.floor(Math.min(canvas.clientWidth, canvas.clientHeight) / 4))
+          if (bbox) map.fitBounds(bbox, { padding: pad, duration: 600, maxZoom: 18.5 })
         }
       }
     }

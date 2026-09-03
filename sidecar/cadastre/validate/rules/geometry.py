@@ -37,6 +37,42 @@ def impossible_z(ctx, run_id: str) -> list[Finding]:
     return out
 
 
+def heights_unavailable(ctx, run_id: str) -> list[Finding]:
+    """A unit with no vertical extent is not a volume, and must not receive an identifier.
+
+    Storing an unknown height as None is correct (FR-03 forbids guessing it). But storing
+    it is not the same as reporting it: every other rule *skips* a unit whose limits are
+    None - overlap cannot overlap, containment cannot escape, ordering cannot invert - so
+    such a unit sails through validation with zero findings and reads as clean in the
+    review queue.
+
+    Found end to end: a building ingested without any elevation raster had
+    z=[None, None], produced no findings at all, and was approved through the API,
+    receiving a permanent 3D ULPIN for something with no third dimension.
+
+    An error rather than a warning: a provisional record may certainly lack heights while
+    the rasters are still being fitted, but the identifier minted at approval is
+    permanent, and issuing one over an unmeasured volume is exactly what this system
+    exists to prevent.
+    """
+    out = []
+    for uid, u in ctx.units.items():
+        missing = [n for n, v in (("lower_limit", u.lower_limit),
+                                  ("upper_limit", u.upper_limit)) if v is None]
+        if not missing:
+            continue
+        why = u.attributes.get("heights_unavailable")
+        out.append(finding(
+            run_id, RuleId.HEIGHTS_UNAVAILABLE, Severity.ERROR, uid,
+            f"{uid} has no vertical extent ({', '.join(missing)} unknown)"
+            + (f": {why}." if why else ".")
+            + " A unit without heights is not a volume and cannot carry a 3D identifier.",
+            geometry=u.footprint_2d,
+            action="Supply elevation data covering this footprint and re-derive the "
+                   "heights, or enter them manually. Do not approve until then."))
+    return out
+
+
 def duplicate(ctx, run_id: str) -> list[Finding]:
     """Same normalised footprint AND the same z-range. Either alone is legitimate:
     every floor of a building shares one footprint.

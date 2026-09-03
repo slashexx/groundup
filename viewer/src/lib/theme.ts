@@ -20,6 +20,8 @@ export const PARCEL_OUTLINE = '#8a8578'
 /** Units whose vertical extent is unknown — recorded as absent, never guessed. */
 export const UNKNOWN_COLOR = '#9aa39e'
 export const SELECT_COLOR = '#ffb703'
+/** Section-cut trace — drafting red, reserved for the cut. */
+export const CUT_COLOR = '#b23a2a'
 export const OUTLINE_COLOR = '#1c2321'
 export const GROUND_COLOR = '#e8e6df'
 
