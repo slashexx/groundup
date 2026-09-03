@@ -59,6 +59,17 @@ deploys, not yet CI).
 - Reuses the existing Netlify site rather than minting a second link — one shareable URL
   for the team, history preserved.
 
+- **UI is a drafting sheet over one full-bleed scene** (2026-09-03 revamp): the 3D scene
+  is the page; chrome floats as paper panels — plan inset (bottom-left, expandable),
+  record extract (right, only when a unit is selected), mono provenance line. The
+  signature control is the **elevation gauge**: a graduated metre ruler (ground line ±0,
+  hatched below-grade zone, floor ticks derived from the data) whose draggable red handle
+  IS the section cut; red is reserved for the cut. System font stacks only — the
+  offline/zero-request rule outweighed the font pairing a design pass suggested.
+- **Search selects, it does not cull**: the query drives Enter-to-select and is stripped
+  from the filter passed to the viewers, so spatial context never disappears. Type and
+  validation chips still filter the scene.
+
 ## Observed state (2026-09-03)
 
 Fixture bundle published and verified headless (banner, search → APT-102 planted

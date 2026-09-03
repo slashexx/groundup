@@ -10,6 +10,7 @@ import {
   VALIDATION_LABELS,
   Viewer3D,
 } from '@viewer'
+import { Gauge } from './Gauge.tsx'
 
 interface Manifest {
   exported_at?: string
@@ -24,17 +25,19 @@ type LoadState =
   | { phase: 'error'; message: string }
 
 /**
- * Read-only published viewer (P6). Renders the bundle exported by
- * tools/publish.mjs — never invents data: a missing or invalid bundle is an
- * explicit error state, not a silent fallback.
+ * Read-only published viewer (P6). One full-bleed 3D scene — the land itself —
+ * with drafting-sheet instruments floating over it. Renders the bundle exported
+ * by tools/publish.mjs and never invents data: a missing or invalid bundle is
+ * an explicit error state, not a silent fallback.
  */
 export default function App() {
   const [load, setLoad] = useState<LoadState>({ phase: 'loading' })
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [filter, setFilter] = useState<UnitFilter>({})
-  const [sliceOn, setSliceOn] = useState(false)
-  const [sliceHeight, setSliceHeight] = useState(0)
+  const [cutOn, setCutOn] = useState(false)
+  const [cutHeight, setCutHeight] = useState(0)
   const [showUnderground, setShowUnderground] = useState(false)
+  const [planLarge, setPlanLarge] = useState(false)
 
   useEffect(() => {
     const base = import.meta.env.BASE_URL
@@ -61,7 +64,7 @@ export default function App() {
         }
         const units = fromP4Document(doc)
         setLoad({ phase: 'ready', units, manifest })
-        setSliceHeight(heightRangeOf(units)[1])
+        setCutHeight(heightRangeOf(units)[1])
         setSelectedId(null)
       })
       .catch((e: Error) => {
@@ -73,15 +76,31 @@ export default function App() {
   }, [])
 
   const units = load.phase === 'ready' ? load.units : []
-  const [sliceMin, sliceMax] = useMemo(() => heightRangeOf(units), [units])
+  const [gaugeMin, gaugeMax] = useMemo(() => heightRangeOf(units), [units])
+  // The query drives search (Enter selects); it must not cull the scene —
+  // a record viewer keeps spatial context while highlighting the match.
+  const sceneFilter = useMemo(
+    () => ({ types: filter.types, validation: filter.validation }),
+    [filter.types, filter.validation],
+  )
+  const floorMarks = useMemo(
+    () =>
+      [...new Set(
+        units
+          .filter((u) => u.unit_type === 'floor' || u.unit_type === 'apartment')
+          .map((u) => u.base_m)
+          .filter((b): b is number => b != null),
+      )],
+    [units],
+  )
 
   if (load.phase !== 'ready') {
     return (
       <div className="gate">
         {load.phase === 'loading' ? (
           <div className="gate-card">
-            <h1>groundup · 3D ULPIN</h1>
-            <p>Loading published record…</p>
+            <h1>groundup</h1>
+            <p>Loading the published record…</p>
           </div>
         ) : (
           <div className="gate-card gate-error" role="alert">
@@ -102,12 +121,32 @@ export default function App() {
   }
 
   const m = load.manifest
+  const provenance = [
+    m?.exported_at ? `exported ${new Date(m.exported_at).toLocaleString()}` : null,
+    `${units.length} units`,
+    m?.finding_count != null ? `${m.finding_count} findings` : null,
+    m?.source ? `source ${m.source}` : null,
+  ]
+    .filter(Boolean)
+    .join('  ·  ')
+
   return (
-    <div className="app">
-      <header className="app-header">
-        <div className="app-title">
-          <h1>groundup · 3D ULPIN</h1>
-          <span className="app-sub">vertical property record · read-only</span>
+    <div className="stage">
+      <div className="scene">
+        <Viewer3D
+          units={units}
+          selectedId={selectedId}
+          filter={sceneFilter}
+          sliceHeight={cutOn ? cutHeight : null}
+          showUnderground={showUnderground}
+          onSelect={setSelectedId}
+        />
+      </div>
+
+      <header className="bar">
+        <div className="wordmark">
+          <span className="wordmark-name">groundup</span>
+          <span className="wordmark-sub">3-D record of rights · read-only</span>
         </div>
         <SearchFilter
           units={units}
@@ -117,69 +156,84 @@ export default function App() {
         />
       </header>
 
-      <div className="provenance" role="note">
-        <span className="prov-chip prov-strong">published record</span>
-        {m?.exported_at && <span className="prov-chip">exported {new Date(m.exported_at).toLocaleString()}</span>}
-        <span className="prov-chip">{units.length} units</span>
-        {m?.finding_count != null && <span className="prov-chip">{m.finding_count} findings</span>}
-        {m?.source && <span className="prov-chip">source: {m.source}</span>}
-      </div>
+      <p className="provenance">published record · {provenance}</p>
 
-      <main className="app-main">
-        <div className="pane">
-          <div className="pane-label">2D · plan</div>
-          <Map2D units={units} selectedId={selectedId} filter={filter} onSelect={setSelectedId} />
+      <aside className={`plan ${planLarge ? 'large' : ''}`}>
+        <div className="plan-head">
+          <span className="sheet-label">plan · pilot block</span>
+          <button
+            type="button"
+            className="plan-zoom"
+            onClick={() => setPlanLarge(!planLarge)}
+            aria-label={planLarge ? 'Shrink plan' : 'Enlarge plan'}
+          >
+            {planLarge ? '⌄' : '⌃'}
+          </button>
         </div>
-        <div className="pane">
-          <div className="pane-label">3D · volumes</div>
-          <Viewer3D
-            units={units}
-            selectedId={selectedId}
-            filter={filter}
-            sliceHeight={sliceOn ? sliceHeight : null}
-            showUnderground={showUnderground}
-            onSelect={setSelectedId}
-          />
+        <div className="plan-map">
+          <Map2D units={units} selectedId={selectedId} filter={sceneFilter} onSelect={setSelectedId} />
         </div>
-        <DetailsPanel units={units} selectedId={selectedId} onSelect={setSelectedId} />
-      </main>
+        <div className="plan-legend">
+          {Object.entries(VALIDATION_COLORS).map(([state, color]) => (
+            <span key={state} className="legend-item">
+              <i style={{ background: color }} />
+              {VALIDATION_LABELS[state as keyof typeof VALIDATION_LABELS]}
+            </span>
+          ))}
+        </div>
+      </aside>
 
-      <footer className="app-footer">
+      <Gauge
+        min={gaugeMin}
+        max={gaugeMax}
+        floors={floorMarks}
+        value={cutHeight}
+        cutEnabled={cutOn}
+        showUnderground={showUnderground}
+        onValue={setCutHeight}
+        onCutToggle={setCutOn}
+        onUndergroundToggle={setShowUnderground}
+      />
+
+      {selectedId ? (
+        <section className="record" aria-label="Record extract">
+          <div className="record-head">
+            <span className="sheet-label">extract · 3-D record</span>
+            <button type="button" className="record-close" onClick={() => setSelectedId(null)} aria-label="Close extract">
+              ×
+            </button>
+          </div>
+          <DetailsPanel units={units} selectedId={selectedId} onSelect={setSelectedId} />
+        </section>
+      ) : (
+        <p className="hint">select a volume in the scene — or search a ULPIN</p>
+      )}
+
+      {/* small screens: the gauge is replaced by a plain control bar */}
+      <div className="mobile-bar">
         <label className="ctl">
-          <input type="checkbox" checked={sliceOn} onChange={(e) => setSliceOn(e.target.checked)} />
-          Floor slice
+          <input type="checkbox" checked={cutOn} onChange={(e) => setCutOn(e.target.checked)} />
+          Cut
         </label>
         <input
-          className="ctl-slider"
           type="range"
-          min={sliceMin}
-          max={sliceMax}
+          min={gaugeMin}
+          max={gaugeMax}
           step={0.2}
-          value={sliceHeight}
-          disabled={!sliceOn}
-          onChange={(e) => setSliceHeight(Number(e.target.value))}
-          aria-label="Slice height"
+          value={cutHeight}
+          disabled={!cutOn}
+          onChange={(e) => setCutHeight(Number(e.target.value))}
+          aria-label="Section cut elevation"
         />
-        <span className="ctl-value">{sliceOn ? `${sliceHeight.toFixed(1)} m` : '—'}</span>
-
         <label className="ctl">
           <input
             type="checkbox"
             checked={showUnderground}
             onChange={(e) => setShowUnderground(e.target.checked)}
           />
-          Underground view
+          Below grade
         </label>
-
-        <div className="legend">
-          {Object.entries(VALIDATION_COLORS).map(([state, color]) => (
-            <span key={state} className="legend-item">
-              <i style={{ background: color }} />{' '}
-              {VALIDATION_LABELS[state as keyof typeof VALIDATION_LABELS]}
-            </span>
-          ))}
-        </div>
-      </footer>
+      </div>
     </div>
   )
 }

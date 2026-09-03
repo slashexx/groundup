@@ -74,3 +74,5 @@ deploy, not yet CI). Not yet done: embedding in P1's shell, 3D Tiles ingestion,
 `affected_geometry` finding overlays on the map.
 
 Since 2026-09-03 the library is also consumed by P6 (`web/` imports it via a Vite alias — see `.claude/blocks/p6-web.md` for the dedupe constraint that consumers must carry).
+
+Correction (2026-09-03): `Map2D` selection `fitBounds` used a fixed 120 px padding; on small embedded maps (P6's plan inset) padding exceeding the canvas makes MapLibre zoom out to nothing. Padding is now clamped to a quarter of the smaller canvas dimension. Search placeholder shortened to fit narrow hosts.

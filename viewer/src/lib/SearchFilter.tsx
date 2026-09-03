@@ -33,7 +33,7 @@ export function SearchFilter({ units, filter, onFilterChange, onSelect }: Search
       <input
         className="p5-search"
         type="search"
-        placeholder="Search ULPIN or unit id… (Enter selects first match)"
+        placeholder="search ULPIN / unit id"
         value={query}
         onChange={(e) => {
           setQuery(e.target.value)
