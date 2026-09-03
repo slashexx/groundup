@@ -31,7 +31,14 @@ def siblings_overlap(ctx, run_id: str) -> list[Finding]:
             continue
         for oid in ctx.candidates(uid):
             other = ctx.units[oid]
-            if other.unit_type.is_easement or ctx.parent.get(uid) != ctx.parent.get(oid):
+            if ctx.parent.get(uid) != ctx.parent.get(oid):
+                continue
+            # Peers only. Overlap between *different* types is containment - a parcel's
+            # footprint covers its buildings, a floor's covers its apartments - and that
+            # is what escapes_parent and the relationship graph are for. Comparing across
+            # types reports a parcel as overlapping the building standing on it, which is
+            # both wrong and the loudest possible finding on a perfectly ordinary site.
+            if other.unit_type is not u.unit_type:
                 continue
             key = tuple(sorted((uid, oid)))
             if key in done:

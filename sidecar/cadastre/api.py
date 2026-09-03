@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from . import export, ingest_gpkg, validate
+from . import derive, export, ingest_gpkg, store, validate
 from .store import (
     ProjectIncomplete,
     acknowledge_finding,
@@ -240,5 +240,28 @@ def project_document(db_path: str = "pilot.gpkg") -> dict[str, Any]:
         return export.document(settings, units, rels, run.findings if run else [])
     except ProjectIncomplete as err:
         raise HTTPException(422, str(err)) from err
+    finally:
+        conn.close()
+
+
+@router.post("/derive")
+def derive_from_rasters(req: ValidationRequest) -> dict[str, Any]:
+    """Give imported buildings a height range and a floor stack from registered rasters.
+
+    The seam between ingest, which imports footprints with no heights because P2
+    registers rasters but does not deliver elevation through the GeoPackage, and extrude,
+    which can derive heights but does not know where a project's rasters live. Without
+    this step the chain stops at footprints: no heights, no floors, nothing approvable.
+
+    A building no registered raster covers is left exactly as ingest produced it and
+    surfaces as HEIGHTS_UNAVAILABLE at validation - visible in the review queue rather
+    than silently absent.
+    """
+    conn = sqlite3.connect(req.db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        return derive.derive_heights(conn).as_dict()
+    except store.ProjectIncomplete as err:
+        raise HTTPException(status_code=409, detail=str(err)) from err
     finally:
         conn.close()
