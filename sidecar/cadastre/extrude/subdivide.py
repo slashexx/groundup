@@ -21,6 +21,7 @@ from shapely.geometry import shape
 from shapely.geometry.base import BaseGeometry
 
 from ..models import CreatedBy, Representation, Status, Unit, UnitType
+from .floors import INHERITED
 
 
 def from_plan(floor: Unit, plan_geoms: list[BaseGeometry], source_ids: list[str],
@@ -51,7 +52,8 @@ def from_plan(floor: Unit, plan_geoms: list[BaseGeometry], source_ids: list[str]
             upper_limit=floor.upper_limit,
             confidence_score=confidence,
             recorded_from=now,
-            attributes={"floor_index": floor.attributes.get("floor_index")},
+            attributes={k: v for k, v in floor.attributes.items() if k in INHERITED}
+            | {"floor_index": floor.attributes.get("floor_index")},
         ))
     if units:
         floor.attributes["subdivided"] = True

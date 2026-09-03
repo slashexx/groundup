@@ -84,7 +84,7 @@ distance maths and must not reproject per operation).
 |---|---|
 | `project_crs` | e.g. `EPSG:32643` |
 | `vertical_datum` | **exactly `EGM2008`** — a free-text mismatch such as `MSL_EGM2008` raises `DATUM_MISMATCH` on every unit |
-| `stratum_below_limit_m`, `stratum_above_limit_m` | defines a parcel's z-extent, e.g. −30 / +150 |
+| `stratum_below_limit_m`, `stratum_above_limit_m` | A parcel's legal column, **relative to ground level at that parcel** — not absolute heights in the vertical datum. e.g. −30 / +150 means 30 m below and 150 m above its own surface. Read absolutely, a −30/+150 column over ground at 912 m sits entirely below the buildings on it and every structure raises `ESCAPES_PARENT`. Ingest cannot anchor this (it has no elevation); `derive` does it once a DEM is registered. |
 | `default_plinth_offset_m` | e.g. 0.6 |
 | `default_parapet_deduction_m` | **0.0.** Was 1.0 in an earlier revision of this contract; that is now wrong. `roof_level` uses a median, which returns the roof slab directly, so a deduction on top lowers every floor by that amount and **every validation rule still passes**. The cadastre block raises `EstimatorMismatch` on any non-zero value rather than accept it. |
 | `ulpin_version` | e.g. `v1` |
