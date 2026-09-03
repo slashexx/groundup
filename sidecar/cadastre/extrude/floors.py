@@ -22,6 +22,9 @@ from shapely.geometry import shape
 
 from ..models import CreatedBy, ProjectSettings, Representation, Status, Unit, UnitType
 
+#: Attributes a child unit inherits from its parent: lineage, never measurements.
+INHERITED = frozenset({"parent_ulpin_14"})
+
 
 class NotExtrudable(ValueError):
     """The building has no usable height range, so floors cannot be derived."""
@@ -65,9 +68,14 @@ def split(building: Unit, floor_count: int, settings: ProjectSettings,
             upper_limit=lower + height,
             confidence_score=building.confidence_score,
             recorded_from=now,
-            attributes={"floor_index": index,
-                        "floor_height_m": round(height, 3),
-                        "subdivided": False},
+            # Carry the parcel reference down. A floor is minted under the same parcel
+            # as its building, and without this every floor fails at approval with
+            # UnknownParcel - a failure that only appears at the very last step, long
+            # after the geometry looked right.
+            attributes={k: v for k, v in building.attributes.items() if k in INHERITED}
+            | {"floor_index": index,
+               "floor_height_m": round(height, 3),
+               "subdivided": False},
         ))
     return floors
 

@@ -159,6 +159,32 @@ def test_implausible_storey_heights_are_flagged_not_corrected(rasters, settings)
     assert flr.implausible(flr.split(b, 2, settings), settings)   # 10.5 m storeys
 
 
+def test_floors_inherit_the_parcel_reference(rasters, settings):
+    """Lineage flows down, so a floor can be minted under its building's parcel.
+
+    Found end to end: a building approved fine because ingest had given it a provisional
+    identifier, but its floors were minted fresh, carried no parent_ulpin_14, and every
+    one of them failed at approval with UnknownParcel - the last step of the chain.
+    """
+    dem, dsm = rasters
+    b = bld.build(FOOTPRINT, dem, dsm, settings, ["SRC-003"], unit_id="BLD-T")
+    b.attributes["parent_ulpin_14"] = "KA05B012345678"
+    b.attributes["raster_coverage"] = 0.99          # a measurement, must NOT be inherited
+
+    for f in flr.split(b, 7, settings):
+        assert f.attributes["parent_ulpin_14"] == "KA05B012345678"
+        assert "raster_coverage" not in f.attributes
+
+
+def test_apartments_inherit_the_parcel_reference(rasters, settings):
+    dem, dsm = rasters
+    b = bld.build(FOOTPRINT, dem, dsm, settings, ["SRC-003"], unit_id="BLD-T")
+    b.attributes["parent_ulpin_14"] = "KA05B012345678"
+    floor = flr.split(b, 7, settings)[1]
+    apts = subdivide.from_plan(floor, [box(E + 8, N + 6, E + 20, N + 24)], ["SRC-005"])
+    assert apts[0].attributes["parent_ulpin_14"] == "KA05B012345678"
+
+
 # --- subdivision -------------------------------------------------------------------
 
 def test_apartments_inherit_the_floor_z_range_exactly(rasters, settings):
