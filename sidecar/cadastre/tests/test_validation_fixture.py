@@ -84,3 +84,29 @@ def test_tolerance_is_recorded_so_a_reviewer_can_see_why(result):
     for f in result.findings:
         if f.rule_id.value in needs_threshold:
             assert f.tolerance is not None, f"{f.rule_id.value} on {f.unit_id}"
+
+
+# --- a unit with no vertical extent -------------------------------------------------
+
+def test_a_unit_without_heights_is_reported(bundle):
+    """Storing a missing height is not the same as reporting it.
+
+    Every other rule skips a unit whose limits are None - it cannot overlap, escape or
+    invert - so before this rule existed such a unit produced zero findings, read as
+    clean in the review queue, and could be approved into a permanent 3D identifier.
+    """
+    from cadastre.models import RuleId, Severity
+    from cadastre.validate import run as run_validation
+
+    units = [u for u in bundle["units"]]
+    victim = next(u for u in units if u.unit_id == "BLD-001")
+    victim.lower_limit = victim.upper_limit = None
+
+    result = run_validation(units, bundle["relationships"], bundle["sources"],
+                            bundle["settings"])
+    hits = [f for f in result.findings if f.rule_id is RuleId.HEIGHTS_UNAVAILABLE]
+    assert [f.unit_id for f in hits] == ["BLD-001"]
+    assert hits[0].severity is Severity.ERROR
+    assert not result.approvable("BLD-001"), "a volumeless unit must not be approvable"
+
+    victim.lower_limit, victim.upper_limit = 909.4, 936.5   # restore for other tests

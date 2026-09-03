@@ -22,6 +22,7 @@ Rule = Callable[[ctx_mod.Context, str], list[Finding]]
 RULES: tuple[tuple[str, Rule], ...] = (
     ("geometry.invalid", geometry.invalid),
     ("geometry.impossible_z", geometry.impossible_z),
+    ("geometry.heights_unavailable", geometry.heights_unavailable),
     ("geometry.duplicate", geometry.duplicate),
     ("metadata.crs_mismatch", metadata.crs_mismatch),
     ("metadata.datum_mismatch", metadata.datum_mismatch),

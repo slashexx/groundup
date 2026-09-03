@@ -43,6 +43,7 @@ must be **mandatory** columns, not optional.
 |---|---|---|
 | `GEOM_INVALID` | `shapely.is_valid` | Error |
 | `Z_IMPOSSIBLE` | `lower >= upper` | Error |
+| `HEIGHTS_UNAVAILABLE` | either limit is `None` | Error |
 | `OVERLAP_SIBLING` | STRtree → z-interval → buffered footprint intersection | Error |
 | `GEOM_DUPLICATE` | normalised WKB hash + matching z-range | Error |
 | `ESCAPES_PARENT` | `child.difference(parent).area > tol` — **type-conditional** | Error / expected |
@@ -179,3 +180,25 @@ Nothing wrote to those tables for a while even though the schema defined them, w
 what left the approval guard with nothing to consult and gave a reviewer nowhere to record
 an acknowledgement. A table that exists but is never written is indistinguishable from a
 missing feature — and worse, it reads as though the feature is there.
+
+
+## Storing a missing value is not the same as reporting it
+
+Every rule that compares heights *skips* a unit whose limits are `None` — it cannot
+overlap, cannot escape its parent, cannot invert an ordering. So a unit with no vertical
+extent at all passed validation with **zero findings**, read as clean in the review queue,
+and could be approved into a permanent identifier.
+
+Found by running the chain end to end rather than by reading the rules: a building
+ingested from a GeoPackage with no elevation raster came out `z=[None, None]`, produced no
+findings, and was approved through the HTTP API — a 3D cadastre issuing a permanent
+identifier for something with no third dimension.
+
+`HEIGHTS_UNAVAILABLE` is an **error**, not a warning. A provisional record may legitimately
+lack heights while rasters are still being fitted; errors block approval, not existence.
+But the identifier minted at approval is permanent, and issuing one over an unmeasured
+volume is precisely what this system exists to prevent.
+
+FR-03 has two halves and we had only built the first: *never guess a missing value*, and
+*show it as missing*. Storing `None` satisfies the first. Surfacing it satisfies the
+second.

@@ -11,7 +11,7 @@
     "run_id": { "type": "string", "format": "uuid" },
     "rule_id": {
       "enum": [
-        "GEOM_INVALID", "GEOM_DUPLICATE", "Z_IMPOSSIBLE",
+        "GEOM_INVALID", "GEOM_DUPLICATE", "Z_IMPOSSIBLE", "HEIGHTS_UNAVAILABLE",
         "OVERLAP_SIBLING", "GAP_SIBLING", "ESCAPES_PARENT",
         "FLOOR_SEQUENCE", "FLOOR_HEIGHT_IMPLAUSIBLE",
         "UTILITY_CROSSES_BUILDING", "CRS_MISMATCH", "DATUM_MISMATCH",
