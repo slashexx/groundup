@@ -20,9 +20,16 @@ Live list. Resolve items here and move the outcome into the relevant context fil
 | **`interest` / RRR table** | Without party + right, this is a geometry store, not a cadastre, and PRD §2's dispute-reduction purpose is unreachable. Manual or CSV populated; deed *parsing* stays out of scope. See `01-prd-analysis.md` §2. |
 | **Explicit split/merge events** | `created_from` and `replaced_by` exist, but there is no n:m event with `predecessor_ids[]`/`successor_ids[]`. Without it a chain of title cannot be traced. |
 | **Evaluation set and metrics** | AI is in the loop with no metrics, so `confidence_score` currently has no calibrated meaning. Needs a hand-delineated hold-out reporting footprint IoU, storey-count exact match, volumetric IoU. |
+| **The fixture has no unknown-height unit** | Every one of the 16 units in `demo-parcel.json` has a height, so the FR-03 path — `lower_limit: null`, which P5 renders as a grey marker slab and P1 counts on the dashboard — is never exercised by the committed fixture. Found when writing the export tests. It *is* exercised live: every unit imported from P2 takes exactly that path, because no DEM/DSM reaches the GeoPackage. Adding one to the generator changes the unit count that several tests and P5's demo assert, so it needs a deliberate pass rather than a drive-by edit. |
+| **P2 delivers no rasters** | `file_inspector` reads a GeoTIFF's CRS, bounds and resolution, but `process_file` then calls `gpd.read_file` unconditionally, so a `.tif` passes inspection and fails on read. The `raster` registry table is created and stays empty. Consequence: `extrude` cannot run on real data and every imported building has an unknown height. P2 owns this; we consume. |
 
 ## Team-level, not ours to decide alone
 
+- **There are two P5 viewers.** `viewer/` consumes the committed contract; `phase5/` uses
+  its own WGS84 GeoJSON, pins the maplibre version known to blank the map, and holds the
+  Netlify config. Only `viewer/` was wired to the live endpoint, because only it speaks
+  the contract — but which is the deliverable has not been decided, and building
+  downstream against both is not possible. See `blocks/p5-viewer.md`.
 - **P3 and P6 have no owner.** P3 is the highest technical risk in the plan; P6 owns the
   pitch. Noted, deferred by team decision since both sit downstream.
 - **Build phases have no dates.** With 20 September as the first checkpoint, Phase 1

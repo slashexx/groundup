@@ -32,9 +32,11 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
      'if not parent.attributes.get("subdivided"):', "if False:",
      "unmodelled interiors reported as gaps"),
     ("validate/rules/overlap.py",
-     "if other.unit_type.is_easement or ctx.parent.get(uid) != ctx.parent.get(oid):",
-     "if ctx.parent.get(uid) != ctx.parent.get(oid):",
-     "utilities reported against every parcel above them"),
+     "        if u.unit_type.is_easement:\n            continue\n", "",
+     "two rights of way sharing a corridor called an overlap"),
+    ("validate/rules/overlap.py",
+     "            if other.unit_type is not u.unit_type:\n                continue\n", "",
+     "a parcel reported as overlapping the building standing on it"),
     ("validate/rules/containment.py",
      ("        if u.unit_type.is_easement:\n            continue"
       "                        # an easement leaving its parcel is expected\n"),
@@ -85,6 +87,57 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
      "approval permitted despite errors or unacknowledged warnings"),
     ("store.py", '    if row["severity"] == Severity.ERROR.value:', "    if False:",
      "errors acknowledged away instead of fixed"),
+
+    # --- the P2 -> P4 import, and the payload the other blocks read -----------------
+    ("ingest_gpkg.py",
+     "    return shapely.wkb.loads(blob[8 + _ENVELOPE_BYTES[indicator]:])",
+     "    return shapely.wkb.loads(blob)",
+     "GeoPackage header fed to a plain WKB parser"),
+    ("ingest_gpkg.py", "    indicator = (flags >> 1) & 0x07", "    indicator = 0",
+     "envelope length assumed rather than read from the flags"),
+    ("ingest_gpkg.py",
+     "    if not parent_ulpin_14:\n        return None",
+     '    if not parent_ulpin_14:\n        parent_ulpin_14 = "KA00X000000000"',
+     "provisional identifiers minted under a placeholder parcel"),
+    ("ingest_gpkg.py", "MAJORITY = 0.5", "MAJORITY = 0.0",
+     "a building attached to a parcel holding a sliver of it"),
+    ("ingest_gpkg.py",
+     ('        return None, {"parcel_unresolved":\n'
+      '                      f"names parcel {named_parcel}, which is not in this project"}'),
+     "        pass",
+     "a parcel id P2 got wrong replaced by a spatial guess"),
+    ("ingest_gpkg.py",
+     ("                created_by=CreatedBy.DERIVED,\n"
+      "                lower_limit=None,\n"
+      "                upper_limit=None,\n"
+      "                recorded_from=now,\n"
+      "                attributes=attrs,"),
+     ("                created_by=CreatedBy.DERIVED,\n"
+      "                lower_limit=settings.stratum_below_limit_m,\n"
+      "                upper_limit=settings.stratum_above_limit_m,\n"
+      "                recorded_from=now,\n"
+      "                attributes=attrs,"),
+     "buildings given the parcel's stratum instead of an unknown height"),
+    ("ingest_gpkg.py",
+     ("        existing = known.get((kind, local_id))\n"
+      "        return (existing, True) if existing else (str(uuid.uuid4()), False)"),
+     "        return str(uuid.uuid4()), False",
+     "re-import minting a second identity for the same parcel"),
+    ("store.py",
+     ('    conn.executemany(\n'
+      '        "UPDATE unit SET validation_state = ? WHERE unit_id = ?",\n'
+      '        [(run.state_of(uid).value, uid) for uid in covered],\n'
+      '    )'),
+     "    pass",
+     "validation results never reaching the units consumers read"),
+    ("store.py",
+     ("    covered = (\n"
+      "        validated_unit_ids\n"
+      "        if validated_unit_ids is not None\n"
+      '        else [r["unit_id"] for r in conn.execute("SELECT unit_id FROM unit")]\n'
+      "    )"),
+     '    covered = [r["unit_id"] for r in conn.execute("SELECT unit_id FROM unit")]',
+     "a scoped run marking units it never looked at"),
 ]
 
 

@@ -1,29 +1,50 @@
 import { useState } from 'react';
 import { Icons } from '../components/Icons';
 import { mockSearchResults } from '../data/mockData';
+import { UNIT_TYPE_LABELS, searchRows } from '../data/cadastreApi';
+import { DataSourceBanner, useCadastreDocument } from '../data/useCadastre';
 
-const filterOptions = ['All Types', 'Apartment', 'Commercial', 'Residential', 'Office', 'Parking', 'Underground'];
-const statusFilters = ['All Status', 'Approved', 'Draft', 'Processing', 'Needs Review'];
+// Live, the types are the six the contract defines — not a free-text list.
+const LIVE_TYPES = ['All Types', ...Object.values(UNIT_TYPE_LABELS)];
+const LIVE_STATUSES = ['All Status', 'draft', 'processing', 'needs_review', 'approved', 'replaced', 'closed'];
+const MOCK_TYPES = ['All Types', 'Apartment', 'Commercial', 'Residential', 'Office', 'Parking', 'Underground'];
+const MOCK_STATUSES = ['All Status', 'Approved', 'Draft', 'Processing', 'Needs Review'];
 
 export default function SearchPage() {
+  const { doc, live, status: loadStatus, error: loadError, reload } = useCadastreDocument();
   const [query, setQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState('All Types');
   const [statusFilter, setStatusFilter] = useState('All Status');
   const [results, setResults] = useState(mockSearchResults);
   const [searched, setSearched] = useState(false);
 
+  const filterOptions = live ? LIVE_TYPES : MOCK_TYPES;
+  const statusFilters = live ? LIVE_STATUSES : MOCK_STATUSES;
+
   const handleSearch = () => {
     setSearched(true);
-    // Filter mock results based on query
-    if (query) {
-      setResults(mockSearchResults.filter(r =>
+    if (live && doc) {
+      // Every unit is searchable, including ones whose identifier is still provisional.
+      setResults(searchRows(doc, query).map(r => ({
+        ulpin: r.ulpin,
+        provisional: r.provisional,
+        type: r.type,
+        building: r.unitId,
+        floor: r.floor ?? '—',
+        status: r.status,
+        validationState: r.validationState,
+        address: r.lower === null || r.upper === null
+          ? 'height unknown — recorded as absent, never guessed'
+          : `${r.lower} m → ${r.upper} m ${r.datum}`,
+      })));
+      return;
+    }
+    setResults(query
+      ? mockSearchResults.filter(r =>
         r.ulpin.toLowerCase().includes(query.toLowerCase()) ||
         r.building.toLowerCase().includes(query.toLowerCase()) ||
-        r.address.toLowerCase().includes(query.toLowerCase())
-      ));
-    } else {
-      setResults(mockSearchResults);
-    }
+        r.address.toLowerCase().includes(query.toLowerCase()))
+      : mockSearchResults);
   };
 
   const filtered = results.filter(r => {
@@ -37,9 +58,12 @@ export default function SearchPage() {
       <h2 style={{ fontSize: 'var(--text-xl)', fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>
         Search ULPIN
       </h2>
-      <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)', marginBottom: 24 }}>
+      <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)', marginBottom: 12 }}>
         Search by ULPIN, parcel number, address, building name, or property type
       </p>
+      <div style={{ marginBottom: 16 }}>
+        <DataSourceBanner status={loadStatus} error={loadError} onRetry={reload} />
+      </div>
 
       {/* Search Bar */}
       <div className="search-bar">
@@ -99,6 +123,11 @@ export default function SearchPage() {
                     color: 'var(--accent-primary)', marginBottom: 2
                   }}>
                     {result.ulpin}
+                    {result.provisional && (
+                      <span style={{ marginLeft: 8, fontFamily: 'var(--font-family)', fontSize: '10px', fontWeight: 400, color: 'var(--text-muted)' }}>
+                        provisional
+                      </span>
+                    )}
                   </div>
                   <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>
                     {result.type} · {result.building} · Floor {result.floor}

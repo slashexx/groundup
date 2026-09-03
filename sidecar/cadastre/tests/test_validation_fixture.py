@@ -110,3 +110,39 @@ def test_a_unit_without_heights_is_reported(bundle):
     assert not result.approvable("BLD-001"), "a volumeless unit must not be approvable"
 
     victim.lower_limit, victim.upper_limit = 909.4, 936.5   # restore for other tests
+
+
+def test_two_easements_may_share_space(bundle):
+    """A water main and a duct bank crossing is ordinary, not an encroachment.
+
+    The same-type restriction in siblings_overlap covers a parcel against the building
+    on it, but two easements are the *same* type - so the easement exemption is still
+    doing real work, and this is what proves it.
+    """
+    from copy import deepcopy
+
+    from cadastre.models import RuleId
+    from cadastre.validate import run as run_validation
+
+    units = list(bundle["units"])
+    main = next(u for u in units if u.unit_id == "UGF-001")
+    twin = deepcopy(main)
+    twin.unit_id = "UGF-002"
+    twin.ulpin_provisional = None
+    twin.attributes = dict(main.attributes) | {"utility_kind": "telecom"}
+    units.append(twin)
+
+    # The twin must sit under the same parcel, or the sibling check skips the pair
+    # before the easement rule is ever consulted - and the test would pass for the
+    # wrong reason, which is the trap this suite has fallen into before.
+    from cadastre.models import Relationship, RelType
+    rels = list(bundle["relationships"]) + [
+        Relationship("PCL-001", "UGF-002", RelType.CONTAINS, None),
+        Relationship("UGF-002", "PCL-001", RelType.INSIDE, None),
+    ]
+
+    result = run_validation(units, rels, bundle["sources"], bundle["settings"])
+    clashes = [f for f in result.findings
+               if f.rule_id is RuleId.OVERLAP_SIBLING
+               and {f.unit_id, *f.related_unit_ids} == {"UGF-001", "UGF-002"}]
+    assert not clashes, "two rights of way sharing a corridor is not an overlap"

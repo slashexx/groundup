@@ -17,8 +17,11 @@ The `cadastre` block turns flat shapes into **owned 3D volumes with permanent id
 python3 -m venv .venv
 ./.venv/bin/pip install shapely pytest hypothesis jsonschema rasterio numpy fastapi pydantic uvicorn ruff
 
-# Run the 37-test automated test suite
-./.venv/bin/python -m pytest sidecar/cadastre/tests -v
+# Run the automated test suite
+./.venv/bin/python -m pytest sidecar/cadastre/tests -q
+
+# Every guard must be load-bearing: each mutation removes one and must turn the suite red
+./.venv/bin/python sidecar/cadastre/tools/mutation_check.py
 
 # Run code linter
 ./.venv/bin/ruff check sidecar/cadastre
@@ -27,12 +30,28 @@ python3 -m venv .venv
 ./.venv/bin/python sidecar/cadastre/tools/make_fixture.py
 ```
 
-### Local API Router
+### Local sidecar API
 
 ```bash
-# Start local sidecar API router
-./.venv/bin/python -m uvicorn cadastre.api:router --app-dir sidecar --reload --port 8000
+./.venv/bin/python -m uvicorn cadastre.app:app --app-dir sidecar --reload --port 8000
 ```
+
+> **Run `cadastre.app:app`, not `cadastre.api:router`.** `api.router` is an `APIRouter`,
+> not an application. Uvicorn starts happily with it as a target — it is technically an
+> ASGI callable — and then answers **500 on every route**. This README said `:router` for
+> a while and that command never served a single request.
+
+Then, against a GeoPackage the ingest block has written:
+
+```bash
+curl -X POST localhost:8000/cadastre/ingest   -H 'content-type: application/json' -d '{"db_path":"pilot.gpkg"}'
+curl -X POST localhost:8000/cadastre/validate -H 'content-type: application/json' -d '{"db_path":"pilot.gpkg"}'
+curl "localhost:8000/cadastre/document?db_path=pilot.gpkg"
+```
+
+`/cadastre/document` returns the whole project in the same shape as
+`contracts/fixtures/demo-parcel.json`, which is what the viewer and the desktop shell
+consume. Interactive docs at <http://localhost:8000/docs>.
 
 ---
 

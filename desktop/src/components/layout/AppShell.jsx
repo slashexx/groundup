@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Icons } from '../Icons';
+import { dashboardCounts } from '../../data/cadastreApi';
+import { useCadastreDocument } from '../../data/useCadastre';
 
 const menuItems = [
   { path: '/dashboard', label: 'Dashboard', icon: 'Dashboard' },
@@ -11,6 +13,9 @@ const menuItems = [
   { path: '/ai-tools', label: 'AI Tools', icon: 'AI' },
   { path: '/errors', label: 'Check Errors', icon: 'CheckErrors', badge: 7, badgeType: 'error' },
   { path: '/review', label: 'Review Records', icon: 'Review', badge: 12, badgeType: 'warning' },
+  // The two badges above are placeholders for the offline case. Live, they are replaced
+  // by counts from the project document — a nav badge reading "7 errors" beside a screen
+  // showing none is the same lie as a dashboard of invented numbers.
   { path: '/search', label: 'Search ULPIN', icon: 'Search' },
   { path: '/export', label: 'Export Data', icon: 'Export' },
   { path: '/history', label: 'History', icon: 'History' },
@@ -62,6 +67,15 @@ export default function AppShell({ children, project, user, onChangeProject, onL
   const navigate = useNavigate();
   const [activeTool, setActiveTool] = useState('select');
   const [searchQuery, setSearchQuery] = useState('');
+  const { doc, live } = useCadastreDocument();
+
+  const counts = live && doc ? dashboardCounts(doc) : null;
+  const navItems = counts
+    ? menuItems.map(item =>
+      item.path === '/errors' ? { ...item, badge: counts.errors || null }
+        : item.path === '/review' ? { ...item, badge: counts.needsReview || null }
+          : item)
+    : menuItems;
 
   const handleToolbarClick = (tool) => {
     if (tool.nav) {
@@ -181,7 +195,7 @@ export default function AppShell({ children, project, user, onChangeProject, onL
             <span className="sidebar-header-label">Menu</span>
           </div>
           <nav className="sidebar-nav">
-            {menuItems.map((item) => {
+            {navItems.map((item) => {
               const IconComponent = Icons[item.icon];
               const isActive = location.pathname === item.path;
               return (
