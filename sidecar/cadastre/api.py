@@ -15,7 +15,7 @@ from .store import (
     save_run,
     save_unit,
 )
-from .ulpin import encode, lifecycle
+from .ulpin import encode, ledger, lifecycle
 
 router = APIRouter(prefix="/cadastre", tags=["cadastre"])
 
@@ -84,7 +84,11 @@ def transition_unit_status(
         save_unit(conn, unit)
     except lifecycle.TransitionError as err:
         conn.close()
-        raise HTTPException(status_code=400, detail=str(err))
+        raise HTTPException(status_code=400, detail=str(err)) from err
+    except (ledger.UnknownParcel, ledger.AlreadyIssued) as err:
+        # A guard that fires correctly still owes the caller a readable answer.
+        conn.close()
+        raise HTTPException(status_code=409, detail=str(err)) from err
     finally:
         conn.close()
 
