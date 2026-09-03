@@ -65,10 +65,12 @@ next build with no coordination needed.
 - Fully offline by construction: no Cesium Ion, no external tiles/glyphs/fonts;
   `vite-plugin-cesium` bundles Cesium's static assets.
 
-## Observed state (2026-08-29)
+## Observed state (2026-08-29, updated 2026-09-03)
 
 Components render the committed fixture end-to-end (search → cross-view highlight →
 panel with findings; slice; underground) — verified headless, zero external requests,
 zero console errors. Demo deploy: https://sih26011-3d-ulpin.netlify.app (manual CLI
 deploy, not yet CI). Not yet done: embedding in P1's shell, 3D Tiles ingestion,
 `affected_geometry` finding overlays on the map.
+
+Since 2026-09-03 the library is also consumed by P6 (`web/` imports it via a Vite alias — see `.claude/blocks/p6-web.md` for the dedupe constraint that consumers must carry).
