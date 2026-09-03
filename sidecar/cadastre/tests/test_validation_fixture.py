@@ -135,7 +135,7 @@ def test_two_easements_may_share_space(bundle):
     # The twin must sit under the same parcel, or the sibling check skips the pair
     # before the easement rule is ever consulted - and the test would pass for the
     # wrong reason, which is the trap this suite has fallen into before.
-    from cadastre.models import RelType, Relationship
+    from cadastre.models import Relationship, RelType
     rels = list(bundle["relationships"]) + [
         Relationship("PCL-001", "UGF-002", RelType.CONTAINS, None),
         Relationship("UGF-002", "PCL-001", RelType.INSIDE, None),
