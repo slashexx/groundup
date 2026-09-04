@@ -23,3 +23,11 @@ dist-ssr
 *.sln
 *.sw?
 .vercel
+
+# Per-developer Cargo overrides.
+#
+# A committed absolute target-dir makes the native app unbuildable everywhere else: a
+# Windows "C:/rust_target/..." path was here, and on macOS and Linux cargo refuses
+# outright, because "C:" parses as a path separator. Keep machine-specific overrides
+# local.
+src-tauri/.cargo/
