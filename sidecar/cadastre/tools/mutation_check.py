@@ -130,6 +130,33 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
       '    )'),
      "    pass",
      "validation results never reaching the units consumers read"),
+    # --- the P4 -> P5/P6 seam: what a published record has to carry ----------------
+    ("ingest_gpkg.py",
+     ("                report.relationships.append(\n"
+      "                    Relationship(uid, parcel_uid, RelType.INSIDE, now))\n"),
+     "",
+     "a published building with no parcel above it"),
+    ("derive.py",
+     '    parent = floor.attributes.get("parent_ulpin_14")\n    if not parent:\n        return False',
+     '    parent = floor.attributes.get("parent_ulpin_14")\n    if not parent:\n        parent = "KA00X000000000"',
+     "floor identifiers minted under a parcel nobody chose"),
+    ("derive.py",
+     "            if _identify(conn, floor, settings):\n                report.floors_identified += 1\n",
+     "",
+     "derived floors published as bare uuids"),
+    ("derive.py",
+     ("            save_relationship(conn, Relationship(\n"
+      "                floor.unit_id, rebuilt.unit_id, RelType.INSIDE, datetime.now(UTC)))\n"),
+     "",
+     "a published floor with no building above it"),
+    ("derive.py", "    level = abs(index)", "    level = 0",
+     "every storey identified as the ground floor"),
+    ("derive.py", "    if level > 99:", "    if False:",
+     "a storey above the two-digit ceiling wrapping onto another floor's identifier"),
+    ("store.py",
+     "    except sqlite3.OperationalError as err:\n        raise ProjectIncomplete(\n            \"no `unit` table",
+     "    except ZeroDivisionError as err:\n        raise ProjectIncomplete(\n            \"no `unit` table",
+     "a GeoPackage that is not a project answering 500 instead of 422"),
     ("store.py",
      ("    covered = (\n"
       "        validated_unit_ids\n"

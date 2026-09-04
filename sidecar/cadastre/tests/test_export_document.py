@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import sqlite3
 
 import pytest
 from cadastre import export, store, validate
@@ -78,6 +79,25 @@ def test_every_exported_finding_satisfies_the_outbound_schema(bundle, result):
     for f in doc["findings"]:
         errors = [e.message for e in FINDING_SCHEMA.iter_errors(f)]
         assert not errors, f"{f['finding_id']}: {errors}"
+
+
+def test_containment_is_exported_in_both_directions(bundle):
+    """Every `contains` has a reciprocal `inside`, and the pairing is exact.
+
+    Validation walks `contains`; `viewer/src/lib/adapter.ts` builds a unit's `parent_id`
+    from `inside` **alone**. Both halves are therefore load-bearing, and a producer that
+    writes one silently costs the other consumer its lineage - which is precisely what
+    happened to every building `ingest_gpkg` imported, unnoticed until P6 published live
+    data. Asserted on the payload rather than on a producer because this is what every
+    consumer reads, so the next producer of relationships finds the requirement here.
+    """
+    doc = export.document(bundle["settings"], bundle["units"], bundle["relationships"])
+    contains = {(r["from_unit_id"], r["to_unit_id"])
+                for r in doc["relationships"] if r["rel_type"] == "contains"}
+    inside = {(r["to_unit_id"], r["from_unit_id"])
+              for r in doc["relationships"] if r["rel_type"] == "inside"}
+    assert contains, "the fixture has no containment at all; this test proves nothing"
+    assert contains == inside
 
 
 def test_findings_are_published_under_both_keys(bundle, result):
@@ -178,6 +198,24 @@ def test_the_document_endpoint_refuses_an_unbuilt_project(tmp_path):
     r = TestClient(app).get("/cadastre/document", params={"db_path": str(db)})
     assert r.status_code == 422
     assert "source" in r.json()["detail"]
+
+
+def test_the_document_endpoint_refuses_a_geopackage_that_is_not_a_project(tmp_path):
+    """The case the test above misses: `init_schema` has never run over this file.
+
+    The existing empty-project test calls `init_schema` first, so `unit` exists and the
+    guard that fires is the one on P2's `source` table. A GeoPackage P4 has never touched
+    has no `unit` table either, and that read was unguarded - the endpoint answered
+    **500 with a stack trace** where it meant "this is not a project yet". Found by
+    pointing `pnpm publish:live --db` at the wrong path: `sqlite3.connect` creates an
+    empty file rather than failing, so a typo arrives here as a blank database.
+    """
+    db = tmp_path / "not-a-project.gpkg"
+    sqlite3.connect(db).close()                       # a bare file, no schema at all
+    r = TestClient(app).get("/cadastre/document", params={"db_path": str(db)})
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert "unit" in detail and "ingest" in detail    # and it says what to do about it
 
 
 def test_cors_allows_the_desktop_shell_and_refuses_a_stranger():

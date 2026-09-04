@@ -51,7 +51,11 @@ information that is absent from `.claude/`.
 | [`.claude/08-open-questions.md`](.claude/08-open-questions.md) | Planning, or when something seems unresolved |
 | [`.claude/blocks/p1-desktop.md`](.claude/blocks/p1-desktop.md) | Working in `desktop/` (P1 Desktop application shell), or consuming it |
 | [`.claude/blocks/p2-ingest.md`](.claude/blocks/p2-ingest.md) | Working in `sidecar/ingest/` (P2 Geo Data Pipeline), or consuming it |
+<<<<<<< HEAD
 | [`.claude/blocks/p3-ai.md`](.claude/blocks/p3-ai.md) | Working in `sidecar/ai/` (P3 AI Detection Engine), or consuming it |
+=======
+| [`.claude/blocks/p3-ai.md`](.claude/blocks/p3-ai.md) | Working in `sidecar/ai/` (P3 AI Detection Engine), or consuming its suggestions |
+>>>>>>> c9ba4c4 (feat(integration): wire p6 in chain)
 | [`.claude/blocks/p5-viewer.md`](.claude/blocks/p5-viewer.md) | Working in `viewer/` (P5 components), or consuming them |
 | [`.claude/blocks/p6-web.md`](.claude/blocks/p6-web.md) | Working in `web/` (P6 published viewer), or publishing/deploying |
 
@@ -183,9 +187,13 @@ them for convenience.
 
 ```bash
 python3 sidecar/cadastre/tools/make_fixture.py    # regenerate the fixture (edit the generator, not the JSON)
+python3 sidecar/cadastre/tools/run_chain.py       # P2 -> ingest -> elevation -> derive -> validate
 pytest sidecar/cadastre/tests                     # tests
 ruff check sidecar/cadastre                       # lint
 ```
+
+The chain ends at a published site: run the sidecar, then `cd web && pnpm publish:live
+--db pilot.gpkg`. See [`.claude/blocks/p6-web.md`](.claude/blocks/p6-web.md).
 
 Ownership inside the block: **dhruv** owns rasters and spatial predicates (`extrude/`,
 `validate/`); **shankhanil** owns identity, process and schema (`ulpin/`, `api.py`,

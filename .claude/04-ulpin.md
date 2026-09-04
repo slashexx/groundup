@@ -99,6 +99,25 @@ ULPIN presence by status:
 | replaced | — | retained; successor gets a *new* one |
 | closed | — | retained forever, never reissued |
 
+**"Recomputed freely" still means present.** Floors created by `derive` were the one kind
+of unit that carried no identifier at all: `extrude.floors.split` mints a `uuid4` and
+carries `parent_ulpin_14` down so approval can mint under the right parcel, and nothing
+minted a provisional in between. It looked harmless — approval works either way — until
+P6 published a live project and the raw uuid appeared on screen as the identifier of a
+storey, on the very units that are the vertical subdivision this project exists to
+identify. `derive._identify` now mints one per floor: stratum from the sign of
+`floor_index` (`A` above, `B` for basements), level from its magnitude, sequence from
+`ledger.allocate_sequence` and never from geometry. A floor whose building carries no
+parent parcel is left with none, the same refusal ingest makes.
+
+*Observed, and deliberately not changed:* ingest gives a building `Stratum.ABOVE` level
+`00`, so a live ground floor lands on `A00-001` behind its own building's `A00-000`,
+where the fixture puts buildings on `S00-001` and the ground floor on `A00-000`. No
+collision is possible — `allocate_sequence` is keyed by `(parent, stratum, level,
+unit_id)` and hands out distinct numbers — so this is a modelling choice rather than a
+defect, and changing ingest's stratum would churn identifiers already allocated. Worth
+having an answer ready: a building and its ground floor genuinely do occupy level 0.
+
 
 ## The approval guard fails closed
 

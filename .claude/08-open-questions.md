@@ -30,8 +30,21 @@ Live list. Resolve items here and move the outcome into the relevant context fil
   Netlify config. Only `viewer/` was wired to the live endpoint, because only it speaks
   the contract — but which is the deliverable has not been decided, and building
   downstream against both is not possible. See `blocks/p5-viewer.md`.
-- **P3 and P6 have no owner.** P3 is the highest technical risk in the plan; P6 owns the
-  pitch. Noted, deferred by team decision since both sit downstream.
+- ~~**P3 and P6 have no owner.**~~ Resolved: P3 is soumyadipta (`sidecar/ai/`), P6 is
+  rudraksha (`web/`). Both blocks are in the repository and both are wired into the
+  chain — see `blocks/p3-ai.md` and `blocks/p6-web.md`.
+- **No CI runs outside `sidecar/cadastre/**` and `contracts/**`.** `cadastre.yml` is
+  scoped there on purpose and says so. Nothing checks P1, P2, P3, P5 or P6 on push, so
+  `web/`'s `pnpm test` and every TypeScript build are green only as long as someone runs
+  them locally. Each block owning its own workflow is the obvious answer; whose job it is
+  to write them has not been agreed.
+- **The demo publishes synthetic elevation.** `run_chain.py` registers a generated DEM/DSM
+  because P2 delivers no rasters (see above), and `make_demo_rasters.py` labels the source
+  `generated - not a survey`. Nothing in the published site currently repeats that label,
+  so a judge reading the record sees derived storey heights with no indication that the
+  terrain under them was simulated. Surfacing source provenance in the extract panel is
+  the fix; it needs P5's DetailsPanel to render `source_ids` against the `source` table
+  rather than as bare ids.
 - **Build phases have no dates.** With 20 September as the first checkpoint, Phase 1
   should be days, not weeks.
 - **Team name** — still undecided. Repo is `groundup`.

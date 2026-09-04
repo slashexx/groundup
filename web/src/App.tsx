@@ -18,6 +18,22 @@ interface Manifest {
   source?: string
   unit_count?: number
   finding_count?: number
+  /** How the findings in this bundle came about — see tools/publish.mjs. */
+  validation?: {
+    kind?: 'run' | 'fixture-expectations'
+    run_id?: string | null
+    ruleset_version?: string | null
+  } | null
+}
+
+/** A finding count means nothing without saying what produced it: zero findings from a
+ *  real run is a clean record, zero from an unpublished check is no information at all. */
+function checkedBy(v: Manifest['validation']): string | null {
+  if (v?.kind === 'run' && v.run_id) {
+    return `checked · run ${v.run_id.slice(0, 8)}${v.ruleset_version ? ` · ruleset ${v.ruleset_version}` : ''}`
+  }
+  if (v?.kind === 'fixture-expectations') return 'checked · fixture expectations'
+  return null
 }
 
 type LoadState =
@@ -141,6 +157,7 @@ export default function App() {
     m?.exported_at ? `exported ${new Date(m.exported_at).toLocaleString()}` : null,
     `${units.length} units`,
     m?.finding_count != null ? `${m.finding_count} findings` : null,
+    checkedBy(m?.validation),
     m?.source ? `source ${m.source}` : null,
   ]
     .filter(Boolean)
@@ -172,7 +189,7 @@ export default function App() {
         />
       </header>
 
-      <p className="provenance">published record · {provenance}</p>
+      <p className="provenance" title={provenance}>published record · {provenance}</p>
 
       <aside className={`plan ${planLarge ? 'large' : ''}`}>
         <div className="plan-head">

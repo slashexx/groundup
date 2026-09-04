@@ -11,7 +11,9 @@ link. Pitch deck and demo script are also P6 scope but live outside the repo for
 ```
 web/
 ├── src/App.tsx          read-only app: provenance strip + P5 components
-├── tools/publish.mjs    obtain document → validate → manifest → build → deploy
+├── tools/publish.mjs    obtain document → refuse or stamp a manifest → build → deploy
+├── tools/bundle.mjs     the pure decisions: what is refused, and what "checked" means
+├── tools/bundle.test.mjs
 └── public/data/         document.json + manifest.json — the published bundle
                          (committed output, like the fixture: consumable without running our code)
 ```
@@ -19,8 +21,9 @@ web/
 ```bash
 cd web && pnpm install                # viewer/ must also be installed (see note below)
 pnpm dev                              # local dev against the committed bundle
+pnpm test                             # what the publish pipeline refuses (node:test, no deps)
 pnpm publish:fixture[:deploy]         # bundle = contracts/fixtures/demo-parcel.json
-pnpm publish:live[:deploy]            # bundle = GET /cadastre/document from a running sidecar
+pnpm publish:live[:deploy] [--db P]   # bundle = GET /cadastre/document from a running sidecar
 ```
 
 Live link: **https://sih26011-3d-ulpin.netlify.app** (Netlify site id
@@ -39,10 +42,50 @@ deploys, not yet CI).
   was added.
 - **The publish bundle IS the P4 export document** (`GET /cadastre/document`) — the same
   shape as `contracts/fixtures/demo-parcel.json`, per `.claude/06-contracts.md`. No
-  P6-specific format exists, deliberately: fixture and live export are interchangeable,
-  and P6 works from `main` today while `publish:live` starts working the moment the
-  integration branch merges (the endpoint currently exists only on
-  `integrate-p1-p2-p4-p5`).
+  P6-specific format exists, deliberately: fixture and live export are interchangeable.
+- **`publish:live` also reads `GET /cadastre/runs/latest`**, for the run id and ruleset
+  version that go in the manifest. Its absence is not what gates a publish — see the
+  unvalidated-record refusal below — it only names the run that cleared the record.
+
+## The chain, end to end (2026-09-04)
+
+`publish:live` needs a project that has been ingested, derived *and* validated, in that
+order. Five commands, and getting the order wrong used to fail quietly: publish after
+ingest but before derive and the site renders flat plates; publish before validation and
+it renders "0 findings", which reads as *checked and clean* rather than *never checked*.
+So the sidecar side is now one command that says what each step did:
+
+```bash
+./.venv/bin/python sidecar/cadastre/tools/run_chain.py --gpkg pilot.gpkg
+./.venv/bin/python -m uvicorn cadastre.app:app --app-dir sidecar --port 8000
+cd web && pnpm publish:live --db pilot.gpkg          # add --deploy to push to Netlify
+```
+
+`run_chain.py` runs P2's pipeline over its sample data, imports the layers, registers
+synthetic elevation, derives heights and floors, and validates. `--no-rasters` skips the
+elevation step, which is how you see the FR-03 path: heights stay absent,
+HEIGHTS_UNAVAILABLE is raised, and the record says so rather than guessing.
+
+Three P4-side defects were only visible once P6 published live data, and all three are
+fixed in `sidecar/cadastre/` rather than worked around here:
+
+- **Every published building had no parcel above it.** `ingest_gpkg` wrote the parcel →
+  building `contains` edge but not the reciprocal `inside`, and `viewer/src/lib/adapter.ts`
+  builds `parent_id` from `inside` *alone*. The extract panel's lineage therefore opened
+  at the building — the wrong way round for a land record. The fixture and `derive` had
+  always stored both directions; ingest was the outlier.
+- **Derived floors published as raw uuid4s.** `04-ulpin.md` says a unit in `needs_review`
+  carries a provisional identifier; floors created by `derive` were the one kind that
+  carried none, so the units that *are* the vertical subdivision showed no identifier at
+  all. `derive._identify` now mints one per floor (`A00-001`, `A01-000`, …), refusing
+  when the building has no parent parcel rather than minting under a placeholder.
+- **A mistyped `--db` answered 500 with a stack trace.** `store.load_project` guarded its
+  reads of P2's `source` and `project_settings` tables but not of our own `unit` and
+  `unit_relationship`, so a GeoPackage `init_schema` had never touched raised a bare
+  `sqlite3.OperationalError`. It matters here because `sqlite3.connect` *creates* an
+  empty file for a path that does not exist: a typo in `--db` arrives at the endpoint as
+  a blank database, not as an error. Now 422 with a message naming the path and the
+  ingest call. The existing empty-project test missed it by calling `init_schema` first.
 
 ## Decisions
 
@@ -77,10 +120,68 @@ deploys, not yet CI).
   from the filter passed to the viewers, so spatial context never disappears. Type and
   validation chips still filter the scene.
 
-## Observed state (2026-09-03)
+- **An unvalidated record is not publishable** (2026-09-04, integration): `publish:live`
+  refuses a document containing any unit whose `validation_state` is `unvalidated`. The
+  reason is that `findings: []` renders identically whether the record was checked and
+  came back clean or was never checked at all, and on a published page those read as the
+  same reassuring zero — the same failure class as the approval guard in `04-ulpin.md`,
+  where missing information was treated as *nothing to check*. `validation_state` is the
+  honest signal because `store.save_run` writes it back only for the units its run
+  actually covered, so this catches both the project nobody validated and the one
+  validated before `derive` added its floors. The error names the curl that fixes it.
+  *Failed units do not block a publish* — a record with errors is exactly what the
+  viewer is for; a record nobody looked at is not.
+  **The fixture is exempt**: 14 of its 16 units are deliberately `unvalidated`, because
+  there they are authored content and not the residue of a run. Applying the live rule to
+  it would have broken `publish:fixture`, the demo path, and a test asserts it does not.
+- **The manifest says what produced its findings**: `validation` is
+  `{kind: "run", run_id, ruleset_version}` live and `{kind: "fixture-expectations"}` for
+  the fixture, and the strip renders `checked · run ba182e23 · ruleset r1`. When the run
+  endpoint cannot be reached the strip says *provenance unavailable* rather than
+  *checked* — a check we cannot name is not a check we should claim.
+- **The manifest carries the bundle's file name, never its path.** It read
+  `live · /home/…/scratch/pilot.gpkg` on the first live publish; the manifest is served
+  on a public URL, so that published the operator's directory layout to anyone who opened
+  the link. `basename()` at the point of capture, not at the point of display.
+- **The provenance strip has a lane, and the extract owns the rest.** It is one line at
+  `top: 66px` and `.record` floats over its right end from `top: 76px`, so an unbounded
+  line slid under the panel and the tail was simply lost — the first live publish's
+  absolute path was how we noticed. `right: 444px` reserves the lane whether or not an
+  extract is open (a strip that resized on selection would be worse), and what still does
+  not fit is ellipsised with the whole line on `title`.
+- **The publish pipeline's decisions are testable**: `tools/bundle.mjs` holds the two pure
+  ones (`refusalFor`, `validationOf`), `tools/publish.mjs` stays the script that fetches,
+  writes and builds. `pnpm test` runs `node:test` against them — no framework, because a
+  guard that only holds when a dependency is installed is not much of a guard.
 
-Fixture bundle published and verified headless (banner, search → APT-102 planted
-OVERLAP_SIBLING finding, slice, underground; missing-bundle gate; publish refusal on
-unreachable sidecar — all pass, zero external requests, zero console errors). Not yet:
-CI deploys, `publish:live` exercised against a real sidecar (endpoint unmerged),
-3D-tiles in the bundle, pitch deck.
+## Observed state (2026-09-04)
+
+**The full chain has been run end to end and published.** `run_chain.py` over P2's sample
+data produces 7 units (1 parcel, 1 building, 5 floors), every one with a provisional
+ULPIN, validating clean under ruleset `r1`; `publish:live` bundles it and the site renders
+the stack with the lineage reading `parcel › building › floor`. Verified headless on Linux
+(`CHROME_PATH=/usr/bin/chromium`; the skill's Chrome path is macOS-only) — zero console
+errors, zero non-same-origin requests.
+
+The committed bundle in `public/data/` is the **fixture** publish, not that live one: it
+is richer (16 units, 5 planted findings, apartments and an underground feature) and it is
+reproducible from the repo, whereas the live bundle depends on a GeoPackage that is not
+committed. `publish:fixture` re-emits the identical `document.json`, so the committed
+artefact is verifiably output rather than hand-edited.
+
+Fixture bundle re-verified headless after the integration changes: provenance strip within
+its lane, search → APT-102 → planted OVERLAP_SIBLING finding with `parcel › building ›
+floor › apartment` lineage, section cut at 6.0 m drawn in the scene, underground toggle,
+missing-bundle gate showing "No published record" rather than falling back. All pass.
+
+The three publish failure paths were exercised against a running sidecar after the fix:
+`--db` at a non-project → 422 naming the path and the ingest call; `--db` at an
+ingested-but-unvalidated project → refusal naming the validate curl, with the committed
+bundle byte-identical afterwards; the complete project → 7 units published.
+
+Not yet: CI (neither `pnpm test` nor a deploy runs on push — `cadastre.yml` is scoped to
+`sidecar/cadastre/**` and `contracts/**`, and its own comment says other blocks add their
+own workflows, so this is P6's to add); 3D-tiles in the bundle; pitch deck. The live
+publish has not been `--deploy`ed to Netlify — the committed fixture bundle is what the
+public link currently serves, and pushing the synthetic 7-unit project over it is a call
+for the block's owner.

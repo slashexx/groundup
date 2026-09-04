@@ -12,7 +12,7 @@ import struct
 import pytest
 import shapely.geometry
 from cadastre import ingest_gpkg, store
-from cadastre.models import ProjectSettings, Status, UnitType
+from cadastre.models import ProjectSettings, RelType, Status, UnitType
 
 SETTINGS = ProjectSettings(
     project_crs="EPSG:32643", vertical_datum="EGM2008",
@@ -163,7 +163,35 @@ def test_a_footprint_straddling_a_boundary_still_attaches_to_its_own_parcel(gpkg
     assert report.unresolved == []
     b = next(u for u in report.units if u.unit_type is UnitType.BUILDING)
     assert b.attributes["parcel_share"] > 0.95
-    assert len(report.relationships) == 1
+    assert len(report.relationships) == 2          # contains + inside, one attachment
+
+
+def test_a_parcel_and_its_building_are_related_in_both_directions(gpkg):
+    """Containment is stored as a pair, and both halves are load-bearing.
+
+    `contains` is what validation walks; `inside` is what a consumer reads to find a
+    unit's parent, and P5's adapter builds lineage from that edge *alone*. Ingest wrote
+    only `contains`, so every live-published building had no parcel above it - the record
+    opened on a building floating free, which is the wrong way round for a land record.
+    The fixture and `derive` have always stored both; ingest was the one that did not,
+    and the gap was invisible until P6 published live data.
+    """
+    add_parcel(gpkg, "P-1", rect(0, 0, 100, 100))
+    add_building(gpkg, "B-1", rect(10, 10, 20, 20))
+    report = ingest_gpkg.import_project(gpkg, SETTINGS)
+
+    parcel = next(u for u in report.units if u.unit_type is UnitType.LAND_PARCEL)
+    building = next(u for u in report.units if u.unit_type is UnitType.BUILDING)
+    assert {(r.rel_type, r.from_unit_id, r.to_unit_id) for r in report.relationships} == {
+        (RelType.CONTAINS, parcel.unit_id, building.unit_id),
+        (RelType.INSIDE, building.unit_id, parcel.unit_id),
+    }
+
+    # And both are persisted: `unit_relationship` is keyed on (from, to, rel_type), so
+    # the pair is two rows rather than one silently replacing the other.
+    rows = gpkg.execute(
+        "SELECT rel_type FROM unit_relationship ORDER BY rel_type").fetchall()
+    assert [r[0] for r in rows] == ["contains", "inside"]
 
 
 def test_an_explicit_parcel_id_wins_over_geometry(gpkg):

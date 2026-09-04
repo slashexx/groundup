@@ -24,20 +24,32 @@ groundup/
 │   ├── inbound/            what the cadastre block requires
 │   ├── outbound/           what it emits
 │   └── fixtures/           demo-parcel.json, defects deliberately planted
-└── sidecar/
-    └── cadastre/           3D units, ULPIN, validation
-        ├── models.py       domain types
-        ├── store.py        six tables, SQLite over the project GeoPackage
-        ├── extrude/        footprint + DEM/DSM -> building -> floors -> apartments
-        ├── ulpin/          minting, ledger, lifecycle state machine
-        ├── validate/       topology and provenance checks
-        ├── tools/          fixture generator
-        └── tests/
+├── desktop/                P1 · Tauri review shell
+├── sidecar/
+│   ├── ingest/             P2 · CRS and datum harmonisation -> project GeoPackage
+│   ├── ai/                 P3 · footprint detection and floor estimation
+│   └── cadastre/           P4 · 3D units, ULPIN, validation
+│       ├── models.py       domain types
+│       ├── store.py        six tables, SQLite over the project GeoPackage
+│       ├── extrude/        footprint + DEM/DSM -> building -> floors -> apartments
+│       ├── ulpin/          minting, ledger, lifecycle state machine
+│       ├── validate/       topology and provenance checks
+│       ├── tools/          fixture generator, chain runner
+│       └── tests/
+├── viewer/                 P5 · Cesium + MapLibre components
+└── web/                    P6 · read-only published viewer and publish pipeline
 ```
 
-Remaining blocks — the desktop shell, the geo pipeline, AI detection, the viewer
-components and the static web build — are added by their owners. Nothing is scaffolded
-for them in advance.
+All six blocks are in the repository, each owned and added by its owner; nothing was
+scaffolded for anyone in advance. They form one chain — P2 harmonises the sources, P4
+turns them into identified volumes and checks them, P6 publishes the result to a
+shareable link:
+
+```bash
+python3 sidecar/cadastre/tools/run_chain.py --gpkg pilot.gpkg
+python3 -m uvicorn cadastre.app:app --app-dir sidecar --port 8000
+cd web && pnpm publish:live --db pilot.gpkg
+```
 
 `sidecar/cadastre/` is the block that turns shapes into *owned volumes with names* and
 then proves those volumes are mutually consistent. Everything upstream produces flat
@@ -71,10 +83,10 @@ centimetres would mint a new identifier for a flat someone already owns.
 
 ### 2. Volumes built from evidence, not assumption
 
-Buildings are extruded from a footprint plus a DEM and DSM — median ground level, 90th
-percentile roof (never the maximum, which catches water tanks and antennas), corrected for
-the plinth a building sits on and the parapet wall its roof includes. Floors are divided
-from that usable height.
+Buildings are extruded from a footprint plus a DEM and DSM — median ground level and
+median roof plane, never the maximum, which would catch water tanks and antennas, and
+never a high percentile, which would catch the parapet. Corrected for the plinth a
+building sits on. Floors are divided from that usable height.
 
 Where there is no interior data, **no apartments are invented**. The floor is recorded as
 un-subdivided. Missing data is shown as missing.
@@ -124,7 +136,9 @@ recognises.
 
 ```bash
 python3 sidecar/cadastre/tools/make_fixture.py    # regenerate the demo fixture
+python3 sidecar/cadastre/tools/run_chain.py       # run the whole chain over the sample data
 pytest sidecar/cadastre/tests
+python3 sidecar/cadastre/tools/mutation_check.py  # every guard must be load-bearing
 ruff check sidecar/cadastre
 ```
 

@@ -14,7 +14,7 @@ import pytest
 import rasterio
 from cadastre import derive, store, validate
 from cadastre.models import CreatedBy, Representation, Status, Unit, UnitType
-from cadastre.ulpin.encode import Stratum, format_ulpin
+from cadastre.ulpin.encode import Stratum, format_ulpin, parse_ulpin
 from rasterio.transform import from_origin
 from shapely.geometry import box, mapping
 
@@ -152,3 +152,107 @@ def test_a_building_no_raster_covers_is_left_alone_and_flagged(project):
     assert any(f.rule_id.value == "HEIGHTS_UNAVAILABLE" and f.unit_id == "BLD-FAR"
                for f in result.findings)
     assert not result.approvable("BLD-FAR")
+
+
+# --- identity for derived floors -----------------------------------------------------
+#
+# `04-ulpin.md`: a unit in needs_review carries a provisional identifier that may be
+# recomputed freely; only approval freezes one. Derived floors were the single kind that
+# carried none, so the published record showed a raw uuid4 on exactly the units that are
+# the vertical subdivision this project exists to identify.
+
+def test_derived_floors_get_a_provisional_ulpin(project):
+    r = derive.derive_heights(project, default_floor_count=7)
+    assert r.floors_identified == r.floors_created == 7
+
+    floors = [store.get_unit(project, row["unit_id"]) for row in project.execute(
+        "SELECT unit_id FROM unit WHERE unit_type='floor'")]
+    parsed = {}
+    for f in floors:
+        assert f.ulpin_provisional, f"{f.unit_id} published as a bare uuid"
+        p = parse_ulpin(f.ulpin_provisional)          # also verifies the check character
+        assert p["parent_ulpin_14"] == PARENT
+        assert p["stratum"] is Stratum.ABOVE
+        parsed[f.attributes["floor_index"]] = p
+
+    # The level is the floor index, so the identifier reads as the storey it names.
+    assert {i: parsed[i]["level"] for i in parsed} == {i: i for i in range(7)}
+    # ...and every identifier is distinct, which is the whole point of the sequence.
+    assert len({f.ulpin_provisional for f in floors}) == 7
+
+
+def test_a_floor_identifier_is_allocated_once_and_survives_a_second_derive(project):
+    """Determinism means recomputing yields the same answer, not renumbering.
+
+    `derive` is repeatable - a second run sees no building lacking heights - but the
+    sequence must be keyed to the unit, not to the order units were seen in, or a
+    re-derive would hand a flat somebody owns a different identifier.
+    """
+    derive.derive_heights(project, default_floor_count=7)
+    before = {row["unit_id"]: row["ulpin_provisional"] for row in project.execute(
+        "SELECT unit_id, ulpin_provisional FROM unit WHERE unit_type='floor'")}
+    derive.derive_heights(project, default_floor_count=7)
+    after = {row["unit_id"]: row["ulpin_provisional"] for row in project.execute(
+        "SELECT unit_id, ulpin_provisional FROM unit WHERE unit_type='floor'")}
+    assert after == before
+
+
+def test_a_floor_with_no_parent_parcel_is_left_unidentified(project):
+    """The same refusal ingest makes: no parent, no identifier - never a placeholder.
+
+    A building that carries neither a ULPIN nor a `parent_ulpin_14` has nothing to mint
+    under. Its floors are still derived, still validated and still visible; what they do
+    not get is an identifier claiming a parcel nobody chose.
+    """
+    orphan = box(E + 40, N + 6, E + 56, N + 20)
+    store.save_unit(project, Unit(
+        unit_id="BLD-ORPHAN", unit_type=UnitType.BUILDING, status=Status.NEEDS_REVIEW,
+        crs="EPSG:32643", vertical_datum="EGM2008", footprint_2d=mapping(orphan),
+        source_ids=["SRC-1"], created_by=CreatedBy.DERIVED,
+        representation=Representation.PRISM))
+    project.commit()
+
+    r = derive.derive_heights(project, default_floor_count=2)
+    assert r.floors_created == 4                      # two buildings, two floors each
+    assert r.floors_identified == 2                   # only the one with a parent
+
+    orphan_floors = [store.get_unit(project, row["unit_id"]) for row in project.execute(
+        "SELECT unit_id FROM unit WHERE unit_type='floor'")
+        if store.get_unit(project, row["unit_id"]).attributes.get("parent_ulpin_14") is None]
+    assert orphan_floors
+    assert all(f.ulpin_provisional is None for f in orphan_floors)
+
+
+def test_a_floor_is_related_to_its_building_in_both_directions(project):
+    """The pair, again, at the other producer.
+
+    `derive` has written both since it was added, but nothing asserted it, so the same
+    one-directional slip that hid in `ingest_gpkg` could have been introduced here by an
+    edit and gone unnoticed until it reached a published page.
+    """
+    derive.derive_heights(project, default_floor_count=3)
+    floors = [r["unit_id"] for r in project.execute(
+        "SELECT unit_id FROM unit WHERE unit_type='floor'")]
+    assert len(floors) == 3
+    edges = {(r["rel_type"], r["from_unit_id"], r["to_unit_id"]) for r in project.execute(
+        "SELECT rel_type, from_unit_id, to_unit_id FROM unit_relationship")}
+    for uid in floors:
+        assert ("contains", "BLD-1", uid) in edges
+        assert ("inside", uid, "BLD-1") in edges
+
+
+def test_a_storey_above_the_format_ceiling_is_left_unidentified(project):
+    """The level field holds two digits, so the scheme tops out at storey 99.
+
+    A 101-storey building is not a reason to wrap 100 round to `A00` and hand two
+    different floors identifiers that differ only by sequence. The floors are still
+    derived and still validated; the ones past the ceiling carry no identifier, and
+    `floors_identified` says how many did.
+    """
+    r = derive.derive_heights(project, default_floor_count=101)
+    assert r.floors_created == 101
+    assert r.floors_identified == 100                 # indices 0..99
+
+    unnamed = [store.get_unit(project, row["unit_id"]) for row in project.execute(
+        "SELECT unit_id FROM unit WHERE unit_type='floor' AND ulpin_provisional IS NULL")]
+    assert [u.attributes["floor_index"] for u in unnamed] == [100]

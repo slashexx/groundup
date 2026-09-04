@@ -32,7 +32,8 @@ from .models import (
     UnitType,
 )
 from .store import get_unit, load_project, save_relationship, save_unit
-from .ulpin.encode import parse_ulpin
+from .ulpin import ledger
+from .ulpin.encode import Stratum, format_ulpin, parse_ulpin
 
 
 @dataclass
@@ -41,6 +42,7 @@ class DeriveReport:
     buildings_seen: int = 0
     heights_derived: int = 0
     floors_created: int = 0
+    floors_identified: int = 0          # derived floors that got a provisional ULPIN
     skipped_no_raster: list[str] = field(default_factory=list)
     skipped_thin_coverage: list[str] = field(default_factory=list)
 
@@ -50,6 +52,7 @@ class DeriveReport:
             "buildings_seen": self.buildings_seen,
             "heights_derived": self.heights_derived,
             "floors_created": self.floors_created,
+            "floors_identified": self.floors_identified,
             "skipped_no_raster": self.skipped_no_raster,
             "skipped_thin_coverage": self.skipped_thin_coverage,
         }
@@ -117,6 +120,8 @@ def derive_heights(conn: sqlite3.Connection, *, default_floor_count: int = 1) ->
 
         count = int(rebuilt.attributes.get("floor_count") or default_floor_count)
         for floor in flr.split(rebuilt, count, settings):
+            if _identify(conn, floor, settings):
+                report.floors_identified += 1
             save_unit(conn, floor)
             save_relationship(conn, Relationship(
                 rebuilt.unit_id, floor.unit_id, RelType.CONTAINS, datetime.now(UTC)))
@@ -126,6 +131,41 @@ def derive_heights(conn: sqlite3.Connection, *, default_floor_count: int = 1) ->
 
     conn.commit()
     return report
+
+
+def _identify(conn: sqlite3.Connection, floor: Unit, settings: ProjectSettings) -> bool:
+    """Give a derived floor its provisional ULPIN. Returns whether one was minted.
+
+    `04-ulpin.md` says a unit in `needs_review` carries a provisional identifier that may
+    be recomputed freely; only `approved` freezes one. Derived floors were the single kind
+    that carried none, so the published record showed a raw uuid4 where the identifier
+    belongs - on the very units that *are* the vertical subdivision this project exists to
+    identify. The fixture has always given its floors `A00-000`, `A01-000`, `B01-000`;
+    live data did not, and the divergence only became visible once P6 published it.
+
+    The stratum comes from the sign of `floor_index`, which is how `extrude.floors`
+    already encodes basements, and the level is its magnitude. The sequence is allocated
+    through the ledger, never derived from geometry - see the determinism trap in
+    `04-ulpin.md`. Allocation is keyed by `unit_id`, so re-running derive over a floor
+    that already holds a number returns the same one.
+
+    No parent, no identifier: a floor whose building never carried `parent_ulpin_14` is
+    left with none rather than minted under a placeholder parent, the same refusal ingest
+    makes for a parcel with no parent ULPIN.
+    """
+    parent = floor.attributes.get("parent_ulpin_14")
+    if not parent:
+        return False
+    index = int(floor.attributes.get("floor_index", 0))
+    stratum = Stratum.ABOVE if index >= 0 else Stratum.BELOW
+    level = abs(index)
+    if level > 99:                    # the format holds two digits; refuse rather than wrap
+        return False
+    seq = ledger.allocate_sequence(conn, str(parent), stratum.value, level, floor.unit_id)
+    version = int(str(settings.ulpin_version).lstrip("vV") or 1)
+    floor.ulpin_provisional = format_ulpin(str(parent), version, stratum, level, seq)
+    floor.ulpin_version = settings.ulpin_version
+    return True
 
 
 def _rebuild(building: Unit, footprint, dem: str, dsm: str,

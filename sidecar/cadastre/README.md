@@ -45,6 +45,7 @@ Then, against a GeoPackage the ingest block has written:
 
 ```bash
 curl -X POST localhost:8000/cadastre/ingest   -H 'content-type: application/json' -d '{"db_path":"pilot.gpkg"}'
+curl -X POST localhost:8000/cadastre/derive   -H 'content-type: application/json' -d '{"db_path":"pilot.gpkg"}'
 curl -X POST localhost:8000/cadastre/validate -H 'content-type: application/json' -d '{"db_path":"pilot.gpkg"}'
 curl "localhost:8000/cadastre/document?db_path=pilot.gpkg"
 ```
@@ -52,6 +53,23 @@ curl "localhost:8000/cadastre/document?db_path=pilot.gpkg"
 `/cadastre/document` returns the whole project in the same shape as
 `contracts/fixtures/demo-parcel.json`, which is what the viewer and the desktop shell
 consume. Interactive docs at <http://localhost:8000/docs>.
+
+### The whole chain in one command
+
+Those four calls have to happen in that order, and getting it wrong fails quietly rather
+than loudly: skip `derive` and the project is footprints with no heights; skip `validate`
+and `/cadastre/document` reports `findings: []` for a project nobody checked, which reads
+downstream as a clean bill of health. `run_chain.py` runs P2's pipeline and all of P4's
+steps in order, in-process, and prints what each one did:
+
+```bash
+./.venv/bin/python sidecar/cadastre/tools/run_chain.py --gpkg pilot.gpkg
+./.venv/bin/python sidecar/cadastre/tools/run_chain.py --gpkg dry.gpkg --no-rasters
+```
+
+`--no-rasters` skips the synthetic elevation so the FR-03 path is visible: heights stay
+absent, HEIGHTS_UNAVAILABLE is raised, and the record says why. That is the chain working,
+not the chain failing. To publish the result, see `.claude/blocks/p6-web.md`.
 
 ---
 
@@ -108,7 +126,11 @@ sidecar/cadastre/
 │
 ├── tools/
 │   ├── make_fixture.py   Generator for contracts/fixtures/demo-parcel.json
-│   └── make_rasters.py   Synthetic DEM/DSM raster generator for tests
+│   ├── make_rasters.py   Synthetic DEM/DSM raster generator for tests
+│   ├── make_demo_project.py  P2's pipeline over its samples -> a project GeoPackage
+│   ├── make_demo_rasters.py  DEM/DSM covering a project's own buildings, registered
+│   ├── run_chain.py      P2 -> ingest -> elevation -> derive -> validate, in order
+│   └── mutation_check.py Removes each guard in turn; the suite must go red
 │
 └── tests/                Pytest suite (37 unit & property-based tests)
 ```

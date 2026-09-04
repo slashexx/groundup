@@ -361,14 +361,24 @@ def load_project(conn: sqlite3.Connection):
     """
     from .loader import settings_from_dict
 
-    unit_ids = [r["unit_id"] for r in conn.execute("SELECT unit_id FROM unit")]
+    # Our own tables, guarded exactly like P2's below. `sqlite3.connect` creates an empty
+    # file for a path that does not exist, so a mistyped `db_path` reaches here as a
+    # blank database rather than as an error - and an unguarded read then leaves the API
+    # answering 500 with a stack trace where it means "this is not a project yet". A
+    # guard that fires correctly still owes the caller a readable answer.
+    try:
+        unit_ids = [r["unit_id"] for r in conn.execute("SELECT unit_id FROM unit")]
+        rels = [
+            Relationship(r["from_unit_id"], r["to_unit_id"], RelType(r["rel_type"]),
+                         _dt(r["created_at"]))
+            for r in conn.execute("SELECT * FROM unit_relationship")
+        ]
+    except sqlite3.OperationalError as err:
+        raise ProjectIncomplete(
+            "no `unit` table - this GeoPackage has never been through `init_schema`, so "
+            "it is either not a project or the ingest step has not run. Check the path, "
+            "then POST /cadastre/ingest.") from err
     units = [u for u in (get_unit(conn, uid) for uid in unit_ids) if u is not None]
-
-    rels = [
-        Relationship(r["from_unit_id"], r["to_unit_id"], RelType(r["rel_type"]),
-                     _dt(r["created_at"]))
-        for r in conn.execute("SELECT * FROM unit_relationship")
-    ]
 
     try:
         rows = conn.execute(

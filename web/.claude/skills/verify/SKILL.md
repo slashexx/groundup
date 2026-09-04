@@ -11,11 +11,15 @@ Drive with playwright-core against installed Chrome (no browser download):
 ```js
 import { chromium } from 'playwright-core'
 const browser = await chromium.launch({
-  executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  executablePath: process.env.CHROME_PATH ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   headless: true,
-  args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'], // WebGL in headless
+  // WebGL in headless; --no-sandbox is needed on Linux under a container/CI user
+  args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--no-sandbox'],
 })
 ```
+
+On Linux `CHROME_PATH=/usr/bin/chromium` works; the executable path above is macOS-only
+and a wrong one fails as a launch timeout rather than a missing-file error.
 
 The drive script must live inside this package dir (ESM resolution of playwright-core).
 

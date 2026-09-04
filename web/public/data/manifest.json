@@ -1,6 +1,11 @@
 {
- "exported_at": "2026-09-03T12:14:53.952Z",
+ "exported_at": "2026-09-04T12:22:53.224Z",
  "source": "fixture · demo-parcel.json",
  "unit_count": 16,
- "finding_count": 5
+ "finding_count": 5,
+ "validation": {
+  "kind": "fixture-expectations",
+  "run_id": null,
+  "ruleset_version": null
+ }
 }

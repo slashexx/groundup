@@ -251,8 +251,17 @@ def import_project(conn: sqlite3.Connection, settings: ProjectSettings) -> Impor
             report.units.append(u)
 
             if parent_local is not None:
-                report.relationships.append(Relationship(
-                    parcel_unit[parent_local].unit_id, uid, RelType.CONTAINS, now))
+                # Both directions, deliberately. `contains` is what validation walks;
+                # `inside` is what a consumer reads to find a unit's parent, and P5's
+                # adapter builds lineage from that edge alone. Writing only `contains`
+                # left every published building parentless - the record opened on a
+                # building with no parcel above it, which is the wrong way round for a
+                # land record. `derive` and the fixture have always stored both.
+                parcel_uid = parcel_unit[parent_local].unit_id
+                report.relationships.append(
+                    Relationship(parcel_uid, uid, RelType.CONTAINS, now))
+                report.relationships.append(
+                    Relationship(uid, parcel_uid, RelType.INSIDE, now))
 
     # --- utility corridors -----------------------------------------------------
     if _has_layer(conn, "utility_line"):

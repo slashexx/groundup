@@ -72,7 +72,7 @@ added when P1, P2, P4 and P5 were first wired together.
 ### `POST /cadastre/ingest` — P2 → P4
 
 Reads P2's `parcel`, `building_footprint` and `utility_line` layers out of the project
-GeoPackage and persists them as units and `contains` relationships. Implemented in
+GeoPackage and persists them as units and containment relationships. Implemented in
 `sidecar/cadastre/ingest_gpkg.py`. Three refusals are load-bearing and each has a
 mutation guarding it:
 
@@ -88,11 +88,35 @@ mutation guarding it:
 Re-running the import is safe: `unit_id` is looked up by `attributes.local_id`, never
 re-derived, so a second run reuses the identities the first one allocated.
 
+**Containment is stored as a pair.** A parcel holding a building yields both
+`contains` (parcel → building) and `inside` (building → parcel), and both halves are
+load-bearing: validation walks `contains`, while `viewer/src/lib/adapter.ts` builds a
+unit's `parent_id` from `inside` **alone**. Ingest wrote only `contains` until
+2026-09-04, so every live-published building appeared to have no parcel above it and the
+extract panel's lineage opened at the building — the wrong way round for a land record.
+The fixture and `derive` had stored both directions all along, which is why nothing
+caught it until P6 published live data rather than the fixture. If a rule or a consumer
+ever needs only one direction, it is still both that get written.
+
 ### `GET /cadastre/document` — P4 → P5, P6, P1
 
 The whole project in one payload: `project`, `units`, `relationships`, `findings`. It is
 **the same shape as `contracts/fixtures/demo-parcel.json`**, which is what makes it a
 drop-in replacement for the fixture in P5's `fromP4Document()`.
+
+**It answers 422, never 500, for a GeoPackage that is not a project.** `sqlite3.connect`
+creates an empty file for a path that does not exist, so a mistyped `db_path` reaches the
+endpoint as a blank database rather than as an error; `store.load_project` now guards its
+reads of `unit` and `unit_relationship` the way it always guarded P2's `source` and
+`project_settings`, and the detail names the path and the ingest call. A consumer can
+therefore treat 422 as "not a project yet" and 500 as a genuine bug.
+
+That claim is about the shape, not about the values. Two differences are real and a
+consumer should expect them: the fixture's `land_parcel`s carry frozen `ulpin`s while
+live units in `needs_review` carry only `ulpin_provisional`, and 14 of the fixture's 16
+units are deliberately `unvalidated` where a live document that has been through
+`/cadastre/validate` has none. P6's publish gate turns on exactly that second difference —
+see `blocks/p6-web.md`.
 
 Findings are published under both `findings` and `expected_findings`. The fixture uses
 the latter because there they are an *expectation*; live they are a *result*. Emitting
