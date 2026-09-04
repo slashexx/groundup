@@ -10,6 +10,7 @@ import json
 import argparse
 from typing import List, Dict, Any, Optional
 import numpy as np
+from rasterio.transform import Affine
 
 # Ensure src directory is in Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
@@ -27,23 +28,42 @@ def process_ndsm_detection(
     dem_array: np.ndarray,
     source_raster_ids: List[str],
     crs: str = "EPSG:32643",
-    output_dir: Optional[str] = None
+    output_dir: Optional[str] = None,
+    transform: Optional["Affine"] = None
 ) -> List[Dict[str, Any]]:
     """
     Execute AI detection pipeline on nDSM/DSM/DEM arrays.
     Returns list of contract-compliant AI Suggestion dictionaries.
+
+    `transform` is the raster's affine transform and should always be supplied. Without
+    it FootprintExtractor falls back to the identity transform, so the polygons come back
+    in pixel indices while the contract states they are in the project CRS in metres.
+    Both are plain numbers, so nothing downstream can tell them apart: P4 would place the
+    building at (50, 50) in UTM 43N -- roughly 276 km from the parcel it belongs to, off
+    the coast -- and its area filter would be out by the square of the pixel size.
+    Caught by feeding a real DSM through this function and comparing the bounds against
+    the footprint the same building has in the register.
+
+    Elevation statistics are taken **per footprint**, not over the whole raster. Passing
+    the full arrays gives every building in a scene the same ground level, roof level and
+    storey count -- the tallest and the shortest come back identical. It happens to look
+    right on a single-building tile, where the 90th percentile of the whole surface lands
+    on the one roof present, which is exactly why it survived until a second building
+    appeared.
     """
     extractor = FootprintExtractor()
     estimator = NDSMEstimator()
     builder = SuggestionBuilder()
 
     # Extract building footprint polygons
-    polygons = extractor.extract_from_ndsm(ndsm_array)
+    polygons = extractor.extract_from_ndsm(ndsm_array, transform=transform)
     suggestions = []
 
     for i, poly in enumerate(polygons):
-        # Calculate zonal elevation stats over footprint
-        stats = estimator.estimate_from_arrays(dsm_array, dem_array)
+        # Calculate zonal elevation stats over this footprint alone
+        stats = estimator.estimate_from_arrays(
+            dsm_array, dem_array, mask=_footprint_mask(poly, dsm_array.shape, transform)
+        )
 
         # Build AI Suggestion object
         suggestion = builder.create_suggestion(
@@ -68,6 +88,22 @@ def process_ndsm_detection(
                 json.dump(suggestion_dict, f, indent=2)
 
     return suggestions
+
+
+def _footprint_mask(
+    poly, shape: tuple, transform: Optional["Affine"]
+) -> Optional[np.ndarray]:
+    """Boolean mask selecting the cells this footprint covers.
+
+    Returns None when there is no transform to relate the polygon to the grid, which
+    keeps the previous whole-raster behaviour for a caller that has no georeferencing
+    rather than masking against coordinates that do not mean anything.
+    """
+    if transform is None:
+        return None
+    from rasterio.features import geometry_mask
+
+    return ~geometry_mask([poly], out_shape=shape, transform=transform, invert=False)
 
 
 def process_hybrid_detection(

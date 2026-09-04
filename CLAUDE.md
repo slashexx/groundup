@@ -187,7 +187,7 @@ them for convenience.
 
 ```bash
 python3 sidecar/cadastre/tools/make_fixture.py    # regenerate the fixture (edit the generator, not the JSON)
-python3 sidecar/cadastre/tools/run_chain.py       # P2 -> ingest -> elevation -> derive -> validate
+python3 sidecar/cadastre/tools/run_chain.py       # P2 -> ingest -> elevation -> P3 -> review -> derive -> validate
 pytest sidecar/cadastre/tests                     # tests
 ruff check sidecar/cadastre                       # lint
 ```

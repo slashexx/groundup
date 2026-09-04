@@ -38,6 +38,39 @@ unit without a human. When state is `edited`, use `review.edited_geometry`, not 
 `floor_count_method: "ndsm_division"` is a **guess** and must arrive with low confidence,
 or FR-03 is violated downstream.
 
+Implemented in `sidecar/cadastre/suggestions.py`, and deliberately as **three steps**
+rather than one — `receive`, `review`, `apply`. A single `import_suggestions()` that
+created units would make the human step something a caller could forget, and FR-05 would
+hold by convention. There is no code path from `receive` to a unit that does not pass
+through a review row carrying somebody's name; the `ai_suggestion` table refuses an
+unsigned decision with a `CHECK`, so the rule survives a caller that bypasses the module.
+
+Suggestions are stored as suggestions, not as provisional units. A suggestion has no
+identity to protect, may be rejected outright, and the record of *who decided* is the
+evidence the requirement was met. A unit appears only when someone accepts one.
+
+Two translations happen on the way in, and each has a mutation guarding it:
+
+- **`source_raster_ids` are not `source_ids`.** The contract names entries in P2's
+  `raster` table; `Unit.source_ids` references `source`, which is where accuracy lives.
+  Storing raster ids there gives a unit whose provenance resolves to nothing, so no
+  comparison tolerance can be derived and every overlap involving it is judged against a
+  default. It surfaces as PROVENANCE_MISSING — the right complaint about the wrong cause.
+  The raster ids are kept on `attributes.source_raster_ids`, because one source entry
+  covers several surfaces.
+- **A suggestion in another CRS is refused, not reprojected.** Geometry is in the project
+  CRS by contract. A WGS84 polygon contains perfectly plausible numbers, so nothing
+  downstream would notice; the building would simply be in the sea.
+
+Heights follow `extrude.building.build` exactly — base at ground plus the project plinth
+offset, top at the roof level — so a building the model found and a building the rasters
+produced mean the same thing. They are set only when the suggestion carries **both**
+levels: one without the other is not half a height.
+
+Accepting a suggestion is what finally makes the **CONFIDENCE_LOW** rule live. It has
+keyed on `created_by is AI` since the first validation pass and could never fire, because
+no AI-created unit existed.
+
 ## Outbound — what we emit
 
 ### `outbound/unit.schema.json`
@@ -97,6 +130,49 @@ extract panel's lineage opened at the building — the wrong way round for a lan
 The fixture and `derive` had stored both directions all along, which is why nothing
 caught it until P6 published live data rather than the fixture. If a rule or a consumer
 ever needs only one direction, it is still both that get written.
+
+### `POST /cadastre/detect` · `/suggestions` · `/{id}/review` · `/apply` — P3 → P4
+
+Four routes, because FR-05 is a sequence and not a flag.
+
+**Why a route at all, rather than a P3 command line:** `desktop/src-tauri/tauri.conf.json`
+declares no `externalBin` and the shell spawns no process, so P1 reaches this block over
+`http://127.0.0.1:8000` and nothing else — which is also why `app.py`'s CORS list names
+`tauri://localhost`. Giving P3 a working CLI would not help; no part of the product could
+call it. P3's `main()` prints three lines and runs no detection, and that is fine.
+
+| Route | Does |
+|---|---|
+| `POST /cadastre/detect` | reads the project's registered DEM/DSM, runs P3 over them, and queues what it finds. Implemented in `sidecar/cadastre/detect.py`, the sibling of `derive.py`: same seam, one turning rasters into heights and the other into candidates. 503 — not 500 — when P3 is not installed, naming the pip command; the request is fine, this deployment cannot answer it. A project with no rasters is *reported*, not refused. **Idempotent**: a building already in the queue is reported as `rediscovered`, not queued twice |
+| `POST /cadastre/suggestions` | takes a batch from P3. Nothing here becomes a unit. **All or nothing**: every entry is checked before any is written, so a batch carrying one malformed suggestion is refused whole rather than half-imported. 422 on a contract violation, with the failing path named |
+| `GET /cadastre/suggestions?state=pending` | the review queue — what P1's review screen opens |
+| `POST /cadastre/suggestions/{id}/review` | `accepted`, `edited` or `rejected`, with an actor. `edited` demands the corrected geometry. 409 once the suggestion has become a unit |
+| `POST /cadastre/suggestions/apply` | accepted and edited suggestions become building units, attached to their parcel by the same majority rule ingest uses and identified by the same minting path. Repeatable: a suggestion remembers the unit it produced |
+
+Detecting and queueing are one call because a detection whose results are not stored is
+of no use to a review screen, and `receive` is the contract gate every suggestion has to
+pass anyway — including one the detector itself produced. The transform is handed over
+explicitly rather than left to P3's default; see `blocks/p3-ai.md` for what that default
+cost.
+
+**Detection is a button, so it has to be idempotent, and matching ids is not enough.**
+P3 mints a fresh `suggestion_id` on every run, so pressing Analyse twice stacked a second
+identical outline behind the first — including behind one somebody had already *rejected*,
+which is the queue quietly re-asking a settled question. `receive`'s id guard cannot see
+it: the ids genuinely differ. `detect` therefore compares geometry, and reports a match as
+`rediscovered` rather than queueing it. Same building means **each footprint is more than
+half inside the other** — symmetric, so a large detection cannot swallow a small one or
+the reverse, and the threshold is `ingest_gpkg.MAJORITY` rather than a second number
+invented for the purpose. Found by calling the route twice.
+
+`apply` **skips** pending and rejected suggestions silently, because skipping is correct
+for a batch — `pending` means nobody has looked and `rejected` means somebody said no.
+`suggestions.apply_one()` exists for the caller asking about one suggestion by name, who
+deserves to be told no rather than handed silence.
+
+A decision, once it has produced a unit, cannot be rewound. The unit has a lifecycle of
+its own from that point, and undoing the suggestion behind it would mean orphaning a unit
+or withdrawing an allocated identity, which the ledger forbids.
 
 ### `GET /cadastre/document` — P4 → P5, P6, P1
 

@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
-"""P2 -> P4 in one command, so P6 has something real to publish.
+"""P2 -> P3 -> P4 in one command, so P6 has something real to publish.
 
-Five steps had to be run by hand in the right order before the published viewer could
-show anything but footprints, and getting the order wrong fails quietly: publish a
-project that was ingested but never derived and the site renders flat plates; publish one
-that was never validated and it renders "0 findings", which reads as *checked and clean*
-rather than *never checked*. This runs them in order and says what each one did.
+The steps had to be run by hand in the right order, and getting the order wrong fails
+quietly: publish a project that was ingested but never derived and the site renders flat
+plates; publish one that was never validated and it renders "0 findings", which reads as
+*checked and clean* rather than *never checked*. This runs them in order and says what
+each one did.
 
     ./.venv/bin/python sidecar/cadastre/tools/run_chain.py [--gpkg pilot.gpkg]
                                                            [--no-rasters]
+                                                           [--accept-ai-as NAME]
+
+**AI suggestions stop at the queue unless a person is named.** `--accept-ai-as` takes
+the name of whoever is running the chain and records it as the reviewer, because FR-05
+does not say "a review happened", it says a human decided. It is a stand-in for P1's
+review screen, not a bypass: without it the chain ends with the suggestions listed and
+waiting, which is the correct resting state.
 
 Then, to publish:
 
@@ -36,7 +43,7 @@ sys.path.insert(0, str(REPO / "sidecar"))
 sys.path.insert(0, str(REPO / "sidecar/ingest"))
 
 import make_demo_rasters  # sibling tool: build() and register()
-from cadastre import derive, ingest_gpkg, validate
+from cadastre import derive, detect, ingest_gpkg, suggestions, validate
 from cadastre.store import init_schema, load_project, save_run
 
 #: (sample file, contract layer, source id, source type) - P2's own sample data.
@@ -46,8 +53,11 @@ LAYERS = [
 ]
 
 
+STEPS = 7
+
+
 def step(n: int, title: str) -> None:
-    print(f"\n\033[1m[{n}/5] {title}\033[0m")
+    print(f"\n\033[1m[{n}/{STEPS}] {title}\033[0m")
 
 
 def p2_pipeline(out: Path) -> None:
@@ -69,6 +79,9 @@ def main() -> int:
                     help="project GeoPackage to build (default: ./pilot.gpkg)")
     ap.add_argument("--no-rasters", action="store_true",
                     help="skip synthetic elevation - heights stay absent, as FR-03 requires")
+    ap.add_argument("--accept-ai-as", metavar="NAME", default=None,
+                    help="accept P3's suggestions as this person. Without it they stay in "
+                         "the review queue, which is where FR-05 says they belong.")
     args = ap.parse_args()
     gpkg = Path(args.gpkg).resolve()
 
@@ -97,7 +110,45 @@ def main() -> int:
             print(f"    synthetic DEM/DSM in {dem.parent} " +
                   ", ".join(f"{k}={v['storeys']} storeys" for k, v in meta.items()))
 
-        step(4, "P4 · derive heights and floors")
+        step(4, "P3 · detect buildings from the elevation surface")
+        # The same call P1's AI screen makes over HTTP, so the chain exercises the route
+        # the product uses rather than a path of its own.
+        try:
+            found = detect.DetectReport() if args.no_rasters else detect.run(conn, settings)
+        except detect.AIUnavailable as err:
+            raise SystemExit(f"{err}\nOr run with --no-rasters, which skips detection "
+                             "along with the elevation it reads.") from err
+        if not found.dsm_raster_id:
+            print("    no DEM/DSM registered - nothing for the detector to read")
+        else:
+            print(f"    {found.found} found on {found.dsm_raster_id}/{found.dem_raster_id}, "
+                  f"{found.stored} stored"
+                  + (f", {len(found.already_reviewed)} already decided and left alone"
+                     if found.already_reviewed else ""))
+            for sg in suggestions.listing(conn, "pending"):
+                a = sg["attributes"]
+                print(f"    {sg['suggestion_id'][:8]}  confidence {sg['confidence']:.2f}  "
+                      f"{a.get('floor_count')} storeys  "
+                      f"roof {a.get('roof_level_m')} m  [{sg['review']['state']}]")
+
+        step(5, "review · FR-05")
+        if args.accept_ai_as:
+            pending = suggestions.listing(conn, "pending")
+            for sg in pending:
+                suggestions.review(conn, sg["suggestion_id"], "accepted", args.accept_ai_as)
+            applied = suggestions.apply(conn, settings)
+            print(f"    {len(pending)} suggestions accepted by {args.accept_ai_as!r} -> "
+                  f"{applied.created} new buildings ({applied.with_heights} with heights, "
+                  f"{applied.minted} provisional ULPINs)")
+            if applied.unresolved:
+                print(f"    no parcel holds a majority of: {applied.unresolved}")
+        else:
+            waiting = len(suggestions.listing(conn, "pending"))
+            print(f"    {waiting} suggestions left in the queue - an AI outline becomes a "
+                  "unit only when a person accepts it (FR-05).")
+            print("    pass --accept-ai-as NAME, or review them from P1.")
+
+        step(6, "P4 · derive heights and floors")
         report = derive.derive_heights(conn)
         print(f"    {report.parcels_grounded} parcels grounded, "
               f"{report.heights_derived}/{report.buildings_seen} buildings given heights, "
@@ -107,7 +158,7 @@ def main() -> int:
         for uid in report.skipped_thin_coverage:
             print(f"    raster coverage too thin over {uid} - heights left absent (FR-03)")
 
-        step(5, "P4 · validate")
+        step(7, "P4 · validate")
         units, rels, sources, settings = load_project(conn)
         result = validate.run(units, rels, sources, settings)
         save_run(conn, result, [u.unit_id for u in units])

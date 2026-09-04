@@ -106,6 +106,37 @@ CREATE TABLE IF NOT EXISTS finding (
     resolution_note   TEXT
 );
 
+-- What P3 handed us, and what a human decided about it. Kept as a table of its own
+-- rather than as provisional units, because a suggestion is not a unit: it has no
+-- identity to protect, it may be rejected outright, and the record of *who decided* is
+-- the evidence that FR-05 was honoured. A unit appears only once someone accepts one.
+CREATE TABLE IF NOT EXISTS ai_suggestion (
+    suggestion_id     TEXT PRIMARY KEY,
+    kind              TEXT NOT NULL,
+    geometry          TEXT NOT NULL,      -- GeoJSON Polygon in the project CRS, not WGS84
+    crs               TEXT NOT NULL,
+    source_raster_ids TEXT NOT NULL,
+    confidence        REAL NOT NULL,
+    model_name        TEXT NOT NULL,
+    model_version     TEXT NOT NULL,
+    model_run_at      TEXT NOT NULL,
+    attributes        TEXT NOT NULL DEFAULT '{}',
+    review_state      TEXT NOT NULL,
+    reviewed_by       TEXT,
+    reviewed_at       TEXT,
+    edited_geometry   TEXT,
+    unit_id           TEXT,               -- the unit it became, once applied
+    received_at       TEXT NOT NULL,
+    CHECK (review_state IN ('pending', 'accepted', 'edited', 'rejected')),
+    -- The contract says P4 uses `edited_geometry` and not `geometry` when the state is
+    -- `edited`. Enforced here so an edited suggestion can never silently fall back to
+    -- the outline the model drew - the reviewer's correction would be lost in exactly
+    -- the case where it matters most.
+    CHECK (review_state <> 'edited' OR edited_geometry IS NOT NULL),
+    -- A decision has an author. `pending` is the only state nobody signed.
+    CHECK (review_state = 'pending' OR reviewed_by IS NOT NULL)
+);
+
 CREATE INDEX IF NOT EXISTS idx_unit_status  ON unit(status);
 CREATE INDEX IF NOT EXISTS idx_unit_type    ON unit(unit_type);
 CREATE INDEX IF NOT EXISTS idx_finding_unit ON finding(unit_id);

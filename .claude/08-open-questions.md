@@ -38,6 +38,20 @@ Live list. Resolve items here and move the outcome into the relevant context fil
   `web/`'s `pnpm test` and every TypeScript build are green only as long as someone runs
   them locally. Each block owning its own workflow is the obvious answer; whose job it is
   to write them has not been agreed.
+- **P3 and P4 estimate the roof differently.** P3's `NDSMEstimator` takes the 90th
+  percentile of the DSM; P4's `extrude.raster.roof_level` takes the median, deliberately,
+  with a mutation guarding it ("parapet mistaken for the roof slab"). On a parapeted
+  building the two disagree by roughly the parapet height, so the same building is about a
+  metre taller if the AI proposed it than if the rasters derived it. Harmless on the demo
+  data; needs a decision before real rasters. One estimator has to win, and the argument
+  for the median is written up in `03-design.md`.
+- **Nothing reviews AI suggestions but a command-line flag.** Detection, the queue, the
+  decision and the apply step are all served over HTTP and covered by tests — everything
+  P1's AI screen needs is reachable — but the only caller today is
+  `run_chain.py --accept-ai-as NAME`, which records whoever ran the chain. That is a
+  stand-in for P1's review screen, not a substitute: `AIToolsPage` is still on mock data.
+  Until it is wired, FR-05 is satisfied structurally but not usefully. Deciding P3 needs
+  no CLI (2026-09-04, team) makes this the *only* remaining way in.
 - **The demo publishes synthetic elevation.** `run_chain.py` registers a generated DEM/DSM
   because P2 delivers no rasters (see above), and `make_demo_rasters.py` labels the source
   `generated - not a survey`. Nothing in the published site currently repeats that label,

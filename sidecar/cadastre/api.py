@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from . import derive, export, ingest_gpkg, store, validate
+from . import derive, detect, export, ingest_gpkg, store, suggestions, validate
 from .store import (
     ProjectIncomplete,
     acknowledge_finding,
@@ -238,6 +238,120 @@ def project_document(db_path: str = "pilot.gpkg") -> dict[str, Any]:
         units, rels, _sources, settings = load_project(conn)
         run = load_latest_run(conn)
         return export.document(settings, units, rels, run.findings if run else [])
+    except ProjectIncomplete as err:
+        raise HTTPException(422, str(err)) from err
+    finally:
+        conn.close()
+
+
+# --- P3 -> P4: AI suggestions and the human in front of them ------------------------
+#
+# Three routes, not one, because FR-05 is a sequence and not a flag: suggestions arrive,
+# a person decides, and only then do units exist. `sidecar/cadastre/suggestions.py`
+# carries the reasoning.
+
+
+class SuggestionBatch(BaseModel):
+    db_path: str
+    suggestions: list[dict[str, Any]]
+
+
+class ReviewRequest(BaseModel):
+    state: str
+    actor: str
+    edited_geometry: dict[str, Any] | None = None
+
+
+@router.post("/detect")
+def detect_buildings(req: ValidationRequest) -> dict[str, Any]:
+    """Run P3 over the project's registered rasters and queue what it finds.
+
+    The route exists because P1 has no other way in: the Tauri shell declares no
+    `externalBin` and spawns no process, so an "analyse imagery" button can only reach
+    this block over HTTP. Nothing here becomes a unit - see `/suggestions/{id}/review`.
+    """
+    conn = sqlite3.connect(req.db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        init_schema(conn)
+        settings = load_project(conn)[3]
+        return detect.run(conn, settings).as_dict()
+    except detect.AIUnavailable as err:
+        # 503, not 500: the request is fine and the code is fine, this deployment just
+        # cannot answer it. A reviewer reading the message should know what to install.
+        raise HTTPException(503, str(err)) from err
+    except suggestions.ContractViolation as err:
+        raise HTTPException(422, str(err)) from err
+    except ProjectIncomplete as err:
+        raise HTTPException(422, str(err)) from err
+    finally:
+        conn.close()
+
+
+@router.post("/suggestions")
+def receive_suggestions(req: SuggestionBatch) -> dict[str, Any]:
+    """Take a batch from P3. Nothing here becomes a unit."""
+    conn = sqlite3.connect(req.db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        init_schema(conn)
+        settings = load_project(conn)[3]
+        return suggestions.receive(conn, req.suggestions, settings).as_dict()
+    except suggestions.ContractViolation as err:
+        # 422, not 400: the payload is well-formed JSON that the contract refuses. The
+        # distinction matters to P3, which is the only caller and needs to know which.
+        raise HTTPException(422, str(err)) from err
+    except ProjectIncomplete as err:
+        raise HTTPException(422, str(err)) from err
+    finally:
+        conn.close()
+
+
+@router.get("/suggestions")
+def list_suggestions(db_path: str = "pilot.gpkg",
+                     state: str | None = None) -> dict[str, Any]:
+    """The review queue. `state=pending` is what a reviewer opens."""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = suggestions.listing(conn, state)
+        return {"count": len(rows), "suggestions": rows}
+    finally:
+        conn.close()
+
+
+@router.post("/suggestions/{suggestion_id}/review")
+def review_suggestion(suggestion_id: str, req: ReviewRequest,
+                      db_path: str = "pilot.gpkg") -> dict[str, Any]:
+    """Accept, edit or reject one suggestion. The decision carries a name."""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        suggestions.review(conn, suggestion_id, req.state, req.actor, req.edited_geometry)
+        return {"suggestion_id": suggestion_id, "state": req.state, "reviewed_by": req.actor}
+    except KeyError as err:
+        raise HTTPException(404, str(err)) from err
+    except suggestions.AlreadyApplied as err:
+        raise HTTPException(409, str(err)) from err
+    except ValueError as err:
+        raise HTTPException(400, str(err)) from err
+    finally:
+        conn.close()
+
+
+@router.post("/suggestions/apply")
+def apply_suggestions(req: ValidationRequest) -> dict[str, Any]:
+    """Turn every accepted or edited suggestion into a building unit.
+
+    Pending and rejected suggestions are skipped rather than refused: skipping is the
+    correct answer for a batch, and `apply_one` exists for the caller who is asking
+    about a particular suggestion and deserves to be told no.
+    """
+    conn = sqlite3.connect(req.db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        settings = load_project(conn)[3]
+        return suggestions.apply(conn, settings).as_dict()
     except ProjectIncomplete as err:
         raise HTTPException(422, str(err)) from err
     finally:

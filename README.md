@@ -41,15 +41,20 @@ groundup/
 ```
 
 All six blocks are in the repository, each owned and added by its owner; nothing was
-scaffolded for anyone in advance. They form one chain — P2 harmonises the sources, P4
+scaffolded for anyone in advance. They form one chain — P2 harmonises the sources, P3
+proposes buildings from the elevation surface, a human accepts or corrects each one, P4
 turns them into identified volumes and checks them, P6 publishes the result to a
 shareable link:
 
 ```bash
-python3 sidecar/cadastre/tools/run_chain.py --gpkg pilot.gpkg
+python3 sidecar/cadastre/tools/run_chain.py --gpkg pilot.gpkg [--accept-ai-as NAME]
 python3 -m uvicorn cadastre.app:app --app-dir sidecar --port 8000
 cd web && pnpm publish:live --db pilot.gpkg
 ```
+
+Without `--accept-ai-as`, the AI's suggestions stop in the review queue. That is not a
+missing step — it is the requirement. **No machine guess becomes a record of rights
+without a person's name against it**, and the code has no path around it.
 
 `sidecar/cadastre/` is the block that turns shapes into *owned volumes with names* and
 then proves those volumes are mutually consistent. Everything upstream produces flat
@@ -90,6 +95,11 @@ building sits on. Floors are divided from that usable height.
 
 Where there is no interior data, **no apartments are invented**. The floor is recorded as
 un-subdivided. Missing data is shown as missing.
+
+The AI proposes; it never decides. Detected outlines and storey estimates arrive as
+*suggestions* with a confidence and a model version, and they sit in a queue until a
+person accepts, corrects or rejects each one. Only then does a volume with an identifier
+exist, and it carries the model that proposed it and the confidence it had.
 
 ### 3. Validation that knows what it can measure
 

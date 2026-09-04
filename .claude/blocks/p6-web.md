@@ -50,21 +50,31 @@ deploys, not yet CI).
 ## The chain, end to end (2026-09-04)
 
 `publish:live` needs a project that has been ingested, derived *and* validated, in that
-order. Five commands, and getting the order wrong used to fail quietly: publish after
-ingest but before derive and the site renders flat plates; publish before validation and
-it renders "0 findings", which reads as *checked and clean* rather than *never checked*.
-So the sidecar side is now one command that says what each step did:
+order. The steps had to be run by hand, and getting the order wrong used to fail quietly:
+publish after ingest but before derive and the site renders flat plates; publish before
+validation and it renders "0 findings", which reads as *checked and clean* rather than
+*never checked*. So the sidecar side is now one command that says what each step did:
 
 ```bash
-./.venv/bin/python sidecar/cadastre/tools/run_chain.py --gpkg pilot.gpkg
+./.venv/bin/python sidecar/cadastre/tools/run_chain.py --gpkg pilot.gpkg [--accept-ai-as NAME]
 ./.venv/bin/python -m uvicorn cadastre.app:app --app-dir sidecar --port 8000
 cd web && pnpm publish:live --db pilot.gpkg          # add --deploy to push to Netlify
 ```
 
 `run_chain.py` runs P2's pipeline over its sample data, imports the layers, registers
-synthetic elevation, derives heights and floors, and validates. `--no-rasters` skips the
-elevation step, which is how you see the FR-03 path: heights stay absent,
-HEIGHTS_UNAVAILABLE is raised, and the record says so rather than guessing.
+synthetic elevation, runs **P3's detector**, holds its suggestions for review, derives
+heights and floors, and validates. `--no-rasters` skips the elevation step, which is how
+you see the FR-03 path: heights stay absent, HEIGHTS_UNAVAILABLE is raised, and the
+record says so rather than guessing. `--accept-ai-as NAME` accepts the AI's suggestions
+as that person; without it they stay queued, and the published record contains only what
+P2 delivered.
+
+An accepted suggestion reaches the published page as a building reading **`recorded by
+ai · confidence 90%`** with its source named — the first time P5's DetailsPanel has had
+an AI-created unit to render. On the pilot dataset it also arrives flagged
+OVERLAP_SIBLING, because the synthetic rasters were generated from the footprint P2
+already delivered: the model re-found a building the register already held, and the
+validator caught it before approval. That is a better demo than a clean pass.
 
 Three P4-side defects were only visible once P6 published live data, and all three are
 fixed in `sidecar/cadastre/` rather than worked around here:

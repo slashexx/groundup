@@ -16,6 +16,8 @@ The `cadastre` block turns flat shapes into **owned 3D volumes with permanent id
 # Setup virtual environment and install dependencies
 python3 -m venv .venv
 ./.venv/bin/pip install shapely pytest hypothesis jsonschema rasterio numpy fastapi pydantic uvicorn ruff
+# ...plus P3's, if you want run_chain.py to invoke the detector:
+./.venv/bin/pip install opencv-python-headless onnxruntime
 
 # Run the automated test suite
 ./.venv/bin/python -m pytest sidecar/cadastre/tests -q
@@ -50,6 +52,21 @@ curl -X POST localhost:8000/cadastre/validate -H 'content-type: application/json
 curl "localhost:8000/cadastre/document?db_path=pilot.gpkg"
 ```
 
+AI suggestions take four calls, because FR-05 is a sequence and not a flag:
+
+```bash
+curl -X POST localhost:8000/cadastre/detect -H 'content-type: application/json' \
+     -d '{"db_path":"pilot.gpkg"}'                            # runs P3, fills the queue
+# ...or post a batch produced elsewhere, same contract gate either way:
+curl -X POST localhost:8000/cadastre/suggestions -H 'content-type: application/json' \
+     -d '{"db_path":"pilot.gpkg","suggestions":[ ... ]}'      # nothing becomes a unit here
+curl "localhost:8000/cadastre/suggestions?db_path=pilot.gpkg&state=pending"   # the queue
+curl -X POST "localhost:8000/cadastre/suggestions/$ID/review?db_path=pilot.gpkg" \
+     -H 'content-type: application/json' -d '{"state":"accepted","actor":"bibisha"}'
+curl -X POST localhost:8000/cadastre/suggestions/apply -H 'content-type: application/json' \
+     -d '{"db_path":"pilot.gpkg"}'
+```
+
 `/cadastre/document` returns the whole project in the same shape as
 `contracts/fixtures/demo-parcel.json`, which is what the viewer and the desktop shell
 consume. Interactive docs at <http://localhost:8000/docs>.
@@ -65,7 +82,13 @@ steps in order, in-process, and prints what each one did:
 ```bash
 ./.venv/bin/python sidecar/cadastre/tools/run_chain.py --gpkg pilot.gpkg
 ./.venv/bin/python sidecar/cadastre/tools/run_chain.py --gpkg dry.gpkg --no-rasters
+./.venv/bin/python sidecar/cadastre/tools/run_chain.py --gpkg pilot.gpkg --accept-ai-as NAME
 ```
+
+Seven steps: P2 harmonises, P4 imports, elevation is registered, **P3 detects**, a human
+decides, P4 derives and validates. Without `--accept-ai-as` the suggestions stay in the
+queue, which is where FR-05 says they belong — the flag names whoever is running the
+chain and stands in for P1's review screen.
 
 `--no-rasters` skips the synthetic elevation so the FR-03 path is visible: heights stay
 absent, HEIGHTS_UNAVAILABLE is raised, and the record says why. That is the chain working,
@@ -102,6 +125,8 @@ KA05B012345678 - V1 - A07 - 003 - K      urn:ulpin:3d:v1:KA05B012345678:A:07:003
 
 ```
 sidecar/cadastre/
+├── detect.py             registered rasters -> P3 -> the review queue
+├── suggestions.py        P3 -> P4: receive, review, apply. FR-05 lives here
 ├── models.py             Domain dataclasses (Unit, Finding, Relationship, LedgerEntry)
 ├── store.py              6-table GeoPackage SQLite persistence layer & CRUD helpers
 ├── loader.py             Import transport JSON bundles into domain objects

@@ -203,6 +203,25 @@ When it names a parcel that is not in the file, that is **reported, not silently
 with a spatial guess** — the mismatch is the interesting fact, and quietly resolving it
 would hide a real defect in the upstream data.
 
+## AI suggestions are a table, not provisional units
+
+`ai_suggestion` sits beside `unit` rather than inside it. The temptation is to import
+every suggestion as a `draft` unit and let the lifecycle handle it, and it is the wrong
+shape: a suggestion has no identity to protect, it can be rejected outright and vanish,
+and what has to be recorded about it is *who decided*, which is not a unit attribute. A
+unit exists only once somebody has accepted one, and from that moment the suggestion is
+history — re-deciding it is refused, because the unit has its own lifecycle and an
+allocated identity is never withdrawn.
+
+Three functions, not one, for the same reason. `receive` / `review` / `apply` means there
+is no path from an AI outline to a unit that does not pass through a row carrying a
+person's name. A single `import_suggestions()` would leave FR-05 holding by convention.
+
+*Considered and rejected:* a `provisional` flag on `Unit`. It puts unreviewed AI output
+in the same table every consumer reads, so every query downstream has to remember to
+exclude it — and the one that forgets publishes an unreviewed machine guess as a record
+of rights.
+
 ## Validation state is written back, not just computed
 
 `store.save_run` updates `unit.validation_state` for every unit the run covered.
