@@ -51,6 +51,7 @@ information that is absent from `.claude/`.
 | [`.claude/08-open-questions.md`](.claude/08-open-questions.md) | Planning, or when something seems unresolved |
 | [`.claude/blocks/p1-desktop.md`](.claude/blocks/p1-desktop.md) | Working in `desktop/` (P1 Desktop application shell), or consuming it |
 | [`.claude/blocks/p2-ingest.md`](.claude/blocks/p2-ingest.md) | Working in `sidecar/ingest/` (P2 Geo Data Pipeline), or consuming it |
+| [`.claude/blocks/p3-ai.md`](.claude/blocks/p3-ai.md) | Working in `sidecar/ai/` (P3 AI Detection Engine), or consuming it |
 | [`.claude/blocks/p5-viewer.md`](.claude/blocks/p5-viewer.md) | Working in `viewer/` (P5 components), or consuming them |
 | [`.claude/blocks/p6-web.md`](.claude/blocks/p6-web.md) | Working in `web/` (P6 published viewer), or publishing/deploying |
 
