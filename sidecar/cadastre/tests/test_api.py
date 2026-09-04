@@ -110,3 +110,53 @@ def test_a_clean_unit_approves_and_the_identifier_resolves(client):
 def test_a_malformed_identifier_is_rejected_before_any_lookup(client):
     assert client.get("/cadastre/ulpin/NOT-A-ULPIN",
                       params={"db_path": client.db}).status_code == 400
+
+
+# --- the reference in README.md ------------------------------------------------------
+#
+# §4.1 documented three routes out of fifteen for most of the project's life, and nothing
+# said so. Documentation is the weakest enforcement there is, so this is the enforcement.
+
+def test_the_api_reference_documents_every_route():
+    """Every operation the router serves has a heading in the README, and vice versa.
+
+    Both directions matter. A route nobody documented is the failure this caught; a
+    heading for a route that no longer exists is the one that wastes a consumer's
+    afternoon.
+    """
+    import pathlib
+    import re
+
+    readme = (pathlib.Path(__file__).resolve().parents[1] / "README.md").read_text()
+    section = readme.split("### 4.1 REST API Reference")[1].split("### 4.2 ")[0]
+
+    served = {
+        f"{method} {route.path}"
+        for route in router.routes
+        for method in getattr(route, "methods", set()) - {"HEAD", "OPTIONS"}
+    }
+    documented = set(re.findall(r"^#### `([A-Z]+ /cadastre[^`]*)`", section, re.MULTILINE))
+
+    assert served, "the router serves nothing; this test would pass vacuously"
+    assert served - documented == set(), \
+        f"undocumented routes: {sorted(served - documented)}"
+    assert documented - served == set(), \
+        f"documented routes that do not exist: {sorted(documented - served)}"
+
+
+def test_the_api_reference_states_the_route_count_correctly():
+    """A count in prose is a fact, and facts drift. This one is load-bearing: it is the
+    first thing a reader checks the page against."""
+    import pathlib
+    import re
+
+    readme = (pathlib.Path(__file__).resolve().parents[1] / "README.md").read_text()
+    served = {(m, r.path) for r in router.routes
+              for m in getattr(r, "methods", set()) - {"HEAD", "OPTIONS"}}
+    words = {14: "Fourteen", 15: "Fifteen", 16: "Sixteen", 17: "Seventeen"}
+    stated = re.search(r"(\w+) operations across (\w+) paths", readme)
+
+    assert stated, "the reference no longer states how many routes it covers"
+    assert stated.group(1) == words[len(served)], (
+        f"{len(served)} operations are served, the reference says {stated.group(1)}")
+    assert stated.group(2) == words[len({p for _, p in served})].lower()

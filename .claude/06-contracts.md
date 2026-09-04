@@ -102,6 +102,15 @@ practice: downstream teams build against it before our real code exists.
 Schemas describe shapes. These are the routes that actually move them between blocks,
 added when P1, P2, P4 and P5 were first wired together.
 
+> **Where the API reference lives:** exact request and response bodies for all fifteen
+> operations are in [`sidecar/cadastre/README.md`](../sidecar/cadastre/README.md) §4.1,
+> with every example captured from a running sidecar. This file keeps the *decisions* —
+> why a route exists, what it refuses and why — and the reference keeps the shapes. Two
+> copies of a response body would disagree within a week. A test asserts every route the
+> router serves has a heading there and that no heading describes a route that is gone;
+> §4.1 documented three routes out of fifteen for most of the project's life, and nothing
+> said so.
+
 ### `POST /cadastre/ingest` — P2 → P4
 
 Reads P2's `parcel`, `building_footprint` and `utility_line` layers out of the project

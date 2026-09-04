@@ -219,6 +219,12 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
      "    CHECK (1 = 1)",
      "a decision recorded with no author"),
 
+    # --- the API reference, which drifted to 3 routes out of 15 once already ---------
+    ("README.md", "#### `GET /cadastre/document`", "#### `GET /cadastre/documentt`",
+     "a route the reference stops describing"),
+    ("README.md", "Fifteen operations across fourteen paths",
+     "Sixteen operations across fourteen paths",
+     "a count in the reference that no longer matches the router"),
     ("store.py",
      ("    covered = (\n"
       "        validated_unit_ids\n"
