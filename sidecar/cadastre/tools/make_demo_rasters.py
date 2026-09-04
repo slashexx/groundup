@@ -10,6 +10,10 @@ Synthetic, and labelled as such in the source registry - `provider` says so, and
 accuracy recorded is the accuracy of the simulation, not a claim about survey quality.
 
     ./.venv/bin/python sidecar/cadastre/tools/make_demo_rasters.py project.gpkg
+
+**Run this after ingest, not before.** The rasters are sized to cover the building
+footprints, which are read from the `unit` table - and that table is only populated once
+ingest has imported them.
 """
 
 from __future__ import annotations
@@ -36,7 +40,14 @@ PLINTH = 0.6
 
 
 def footprints(conn: sqlite3.Connection) -> list:
-    rows = conn.execute("SELECT footprint_wkb FROM unit WHERE unit_type = 'building'").fetchall()
+    try:
+        rows = conn.execute(
+            "SELECT footprint_wkb FROM unit WHERE unit_type = 'building'").fetchall()
+    except sqlite3.OperationalError as err:
+        raise SystemExit(
+            "no `unit` table yet - run ingest first. The rasters are sized to cover the "
+            "footprints ingest imports, so there is nothing to cover until it has run."
+        ) from err
     return [shapely.wkb.loads(r[0]) for r in rows]
 
 
