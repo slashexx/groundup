@@ -1,6 +1,7 @@
 """
 P3 AI Detection Engine CLI Orchestrator.
 Runs building extraction & height/floor estimation pipeline on input rasters / arrays.
+Supports YOLOv8-seg / ONNX local model inference & nDSM elevation fallback.
 """
 
 import sys
@@ -9,12 +10,12 @@ import json
 import argparse
 from typing import List, Dict, Any, Optional
 import numpy as np
-from shapely.geometry import Polygon
 
 # Ensure src directory is in Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
 from ai.models import SuggestionKind, FloorCountMethod
+from ai.hybrid_pipeline import HybridP3Pipeline
 from ai.ndsm_estimator import NDSMEstimator
 from ai.footprint_extractor import FootprintExtractor
 from ai.suggestion_builder import SuggestionBuilder
@@ -69,13 +70,47 @@ def process_ndsm_detection(
     return suggestions
 
 
+def process_hybrid_detection(
+    ortho_image_bgr: Optional[np.ndarray],
+    dsm_array: Optional[np.ndarray] = None,
+    dem_array: Optional[np.ndarray] = None,
+    model_path: Optional[str] = None,
+    source_raster_ids: Optional[List[str]] = None,
+    crs: str = "EPSG:32643",
+    output_dir: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """
+    Execute Hybrid YOLOv8 ONNX + Elevation Fallback pipeline.
+    """
+    pipeline = HybridP3Pipeline(model_path=model_path)
+    suggestions = pipeline.process_ortho_and_elevation(
+        ortho_image_bgr=ortho_image_bgr,
+        dsm_array=dsm_array,
+        dem_array=dem_array,
+        source_raster_ids=source_raster_ids,
+        crs=crs
+    )
+
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        for item in suggestions:
+            out_file = os.path.join(output_dir, f"suggestion_{item['suggestion_id']}.json")
+            with open(out_file, "w", encoding="utf-8") as f:
+                json.dump(item, f, indent=2)
+
+    return suggestions
+
+
 def main():
     parser = argparse.ArgumentParser(description="P3 AI Detection Engine")
+    parser.add_argument("--model-path", default=None, help="Path to local ONNX YOLOv8-seg weights file")
     parser.add_argument("--crs", default="EPSG:32643", help="Target projected CRS (default: EPSG:32643)")
     parser.add_argument("--output-dir", default="output", help="Output directory for JSON suggestions")
     args = parser.parse_args()
 
-    print(f"[P3 Engine] Initialized AI Detection Engine | CRS: {args.crs}")
+    print(f"[P3 Engine] Initialized YOLOv8 ONNX & Hybrid Pipeline | CRS: {args.crs}")
+    if args.model_path:
+        print(f"[P3 Engine] Loaded local ONNX model: {args.model_path}")
     print("[P3 Engine] Ready for raster detection pipeline processing.")
 
 

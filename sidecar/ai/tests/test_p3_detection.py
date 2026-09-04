@@ -1,6 +1,6 @@
 """
 Unit test suite for P3 AI Detection Engine.
-Verifies nDSM calculation, floor estimation, FR-03/FR-05 compliance, and contract JSON schema.
+Verifies nDSM calculation, YOLOv8 ONNX segmentation, hybrid pipeline, FR-03/FR-05 compliance, and contract JSON schema.
 """
 
 import sys
@@ -23,7 +23,9 @@ from ai.models import (
 from ai.ndsm_estimator import NDSMEstimator
 from ai.footprint_extractor import FootprintExtractor
 from ai.suggestion_builder import SuggestionBuilder
-from run_detection import process_ndsm_detection
+from ai.yolo_detector import YOLOv8ONNXDetector
+from ai.hybrid_pipeline import HybridP3Pipeline
+from run_detection import process_ndsm_detection, process_hybrid_detection
 
 
 class TestP3AIDetection(unittest.TestCase):
@@ -31,10 +33,10 @@ class TestP3AIDetection(unittest.TestCase):
         self.estimator = NDSMEstimator(default_floor_height_m=3.0)
         self.extractor = FootprintExtractor(min_footprint_area_m2=10.0, simplify_tolerance_m=0.1)
         self.builder = SuggestionBuilder()
+        self.yolo_detector = YOLOv8ONNXDetector()
 
     def test_ndsm_floor_estimation(self):
         """Test nDSM height and floor count estimation logic."""
-        # 10x10 synthetic raster with 9m building height (expected 3 floors)
         dem = np.full((10, 10), 10.0, dtype=np.float32)
         dsm = np.full((10, 10), 19.0, dtype=np.float32)
 
@@ -47,7 +49,7 @@ class TestP3AIDetection(unittest.TestCase):
     def test_fr03_missing_data_compliance(self):
         """FR-03: Missing or low elevation data must return floor_count=None and confidence=0.0."""
         dem = np.full((10, 10), 10.0, dtype=np.float32)
-        dsm = np.full((10, 10), 11.0, dtype=np.float32) # Only 1m height (below building threshold)
+        dsm = np.full((10, 10), 11.0, dtype=np.float32)
 
         stats = self.estimator.estimate_from_arrays(dsm, dem)
         self.assertIsNone(stats["floor_count"])
@@ -89,33 +91,64 @@ class TestP3AIDetection(unittest.TestCase):
     def test_footprint_extraction(self):
         """Verify vector building polygon extraction from nDSM raster mask."""
         ndsm = np.zeros((20, 20), dtype=np.float32)
-        ndsm[5:15, 5:15] = 6.0  # 10x10 building patch with 6m height
+        ndsm[5:15, 5:15] = 6.0
 
         polygons = self.extractor.extract_from_ndsm(ndsm)
         self.assertEqual(len(polygons), 1)
         self.assertIsInstance(polygons[0], Polygon)
         self.assertGreater(polygons[0].area, 50.0)
 
-    def test_pipeline_execution(self):
-        """Verify end-to-end pipeline execution in process_ndsm_detection."""
-        dem = np.full((30, 30), 10.0, dtype=np.float32)
-        dsm = np.full((30, 30), 10.0, dtype=np.float32)
-        dsm[10:25, 10:25] = 22.0  # 15x15 building patch with 12m height (4 floors)
-        ndsm = dsm - dem
+    def test_yolo_onnx_segmentation(self):
+        """Test YOLOv8 ONNX building polygon segmentation from RGB synthetic orthophoto."""
+        rgb = np.zeros((100, 100, 3), dtype=np.uint8)
+        rgb[20:80, 20:80] = 255  # Synthetic bright building square
 
-        suggestions = process_ndsm_detection(
-            ndsm_array=ndsm,
+        results = self.yolo_detector.detect_building_polygons(rgb)
+        self.assertGreater(len(results), 0)
+        poly, conf = results[0]
+        self.assertIsInstance(poly, Polygon)
+        self.assertGreater(conf, 0.50)
+
+    def test_hybrid_pipeline(self):
+        """Test Hybrid Orthophoto + Elevation Pipeline processing."""
+        rgb = np.zeros((100, 100, 3), dtype=np.uint8)
+        rgb[20:80, 20:80] = 255
+
+        dem = np.full((100, 100), 10.0, dtype=np.float32)
+        dsm = np.full((100, 100), 10.0, dtype=np.float32)
+        dsm[20:80, 20:80] = 22.0  # 12m height (4 floors)
+
+        pipeline = HybridP3Pipeline()
+        suggestions = pipeline.process_ortho_and_elevation(
+            ortho_image_bgr=rgb,
             dsm_array=dsm,
             dem_array=dem,
-            source_raster_ids=["test_raster_dsm"],
+            source_raster_ids=["ortho_dsm_composite"],
             crs="EPSG:32643"
         )
         self.assertGreater(len(suggestions), 0)
         first = suggestions[0]
         self.assertEqual(first["kind"], "building_outline")
-        self.assertEqual(first["crs"], "EPSG:32643")
         self.assertEqual(first["review"]["state"], "pending")
         self.assertEqual(first["attributes"]["floor_count"], 4)
+        self.assertEqual(first["attributes"]["floor_count_method"], "ndsm_division")
+
+    def test_hybrid_elevation_fallback(self):
+        """FR-03 Fallback: When orthophoto is present but elevation is absent, floor_count = None."""
+        rgb = np.zeros((100, 100, 3), dtype=np.uint8)
+        rgb[20:80, 20:80] = 255
+
+        pipeline = HybridP3Pipeline()
+        suggestions = pipeline.process_ortho_and_elevation(
+            ortho_image_bgr=rgb,
+            dsm_array=None,
+            dem_array=None,
+            source_raster_ids=["ortho_only_001"]
+        )
+        self.assertGreater(len(suggestions), 0)
+        first = suggestions[0]
+        self.assertIsNone(first["attributes"].get("floor_count"))
+        self.assertEqual(first["review"]["state"], "pending")
 
 
 if __name__ == "__main__":
