@@ -1,6 +1,6 @@
 """
 Unit test suite for P3 AI Detection Engine.
-Verifies nDSM calculation, YOLOv8 ONNX segmentation, hybrid pipeline, FR-03/FR-05 compliance, and contract JSON schema.
+Verifies nDSM calculation, YOLOv8 ONNX segmentation, hybrid pipeline, FR-03/FR-05 compliance, robust edge cases, and contract JSON schema.
 """
 
 import sys
@@ -149,6 +149,47 @@ class TestP3AIDetection(unittest.TestCase):
         first = suggestions[0]
         self.assertIsNone(first["attributes"].get("floor_count"))
         self.assertEqual(first["review"]["state"], "pending")
+
+    def test_edge_case_nan_inf_nodata_pixels(self):
+        """Edge Case 1: Handles NaN, Inf, and NoData void values in elevation rasters cleanly."""
+        dem = np.full((20, 20), 10.0, dtype=np.float32)
+        dsm = np.full((20, 20), 22.0, dtype=np.float32)
+        # Inject NaNs, Infs, and NoData void values
+        dsm[0, 0] = np.nan
+        dsm[0, 1] = np.inf
+        dem[0, 2] = -9999.0
+
+        stats = self.estimator.estimate_from_arrays(dsm, dem)
+        self.assertEqual(stats["floor_count"], 4)
+        self.assertIsNotNone(stats["ground_level_m"])
+
+    def test_edge_case_empty_or_zero_arrays(self):
+        """Edge Case 2: Blank or completely empty arrays return empty suggestions without crashing."""
+        empty_ndsm = np.zeros((10, 10), dtype=np.float32)
+        polys = self.extractor.extract_from_ndsm(empty_ndsm)
+        self.assertEqual(len(polys), 0)
+
+        empty_stats = self.estimator.estimate_from_arrays(None, None)
+        self.assertIsNone(empty_stats["floor_count"])
+        self.assertEqual(empty_stats["confidence"], 0.0)
+
+    def test_edge_case_noise_area_filtering(self):
+        """Edge Case 3: Filters small sub-threshold pixel noise blobs (< 10m²)."""
+        ndsm = np.zeros((50, 50), dtype=np.float32)
+        ndsm[5:7, 5:7] = 5.0  # Only 4 pixels (4m² < 10m² min threshold)
+
+        polys = self.extractor.extract_from_ndsm(ndsm)
+        self.assertEqual(len(polys), 0)
+
+    def test_edge_case_antenna_spike_filtering(self):
+        """Edge Case 4: 90th percentile filtering removes extreme single-pixel antenna spikes."""
+        dem = np.full((20, 20), 10.0, dtype=np.float32)
+        dsm = np.full((20, 20), 19.0, dtype=np.float32)  # 9m roof height (3 floors)
+        dsm[5, 5] = 150.0  # Sensor error / 150m antenna spike on single pixel
+
+        stats = self.estimator.estimate_from_arrays(dsm, dem)
+        # Should calculate height ~9m (3 floors), NOT 140m (46 floors)
+        self.assertEqual(stats["floor_count"], 3)
 
 
 if __name__ == "__main__":
