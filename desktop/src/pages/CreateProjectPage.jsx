@@ -295,7 +295,8 @@ export default function CreateProjectPage({ onCreated }) {
 
             <Field label="Project coordinate system"
                    hint="Projected, in metres. Areas and distances are computed directly in it, so degrees are not an option.">
-              <select className="form-select" value={p.project_crs} onChange={set('project_crs')}>
+              <select
+              onWheel={(e) => e.currentTarget.blur()} className="form-select" value={p.project_crs} onChange={set('project_crs')}>
                 {PROJECT_CRS.map(([code, desc]) => (
                   <option key={code} value={code}>{code} — {desc}</option>
                 ))}
@@ -509,7 +510,8 @@ function SourceRow({ s, i, spec, onEdit, onDrop }) {
           <input className="form-input" type="date" value={s.capture_date} onChange={edit('capture_date')} />
         </Field>
         <Field label="Type">
-          <select className="form-select" value={s.source_type}
+          <select
+              onWheel={(e) => e.currentTarget.blur()} className="form-select" value={s.source_type}
                   onChange={(e) => onEdit(i, 'source_type', e.target.value)}>
             {Object.entries(SOURCE_KINDS).map(([k, v]) => (
               <option key={k} value={k}>{v.label}</option>
@@ -517,7 +519,8 @@ function SourceRow({ s, i, spec, onEdit, onDrop }) {
           </select>
         </Field>
         <Field label="Source CRS">
-          <select className="form-select" value={s.crs} onChange={edit('crs')}>
+          <select
+              onWheel={(e) => e.currentTarget.blur()} className="form-select" value={s.crs} onChange={edit('crs')}>
             {SOURCE_CRS.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
         </Field>
@@ -534,7 +537,8 @@ function SourceRow({ s, i, spec, onEdit, onDrop }) {
         </Field>
         <Field label="Accuracy is"
                hint="Say which. An estimate recorded as a measurement is the one that misleads.">
-          <select className="form-select" value={s.processing_status} onChange={edit('processing_status')}>
+          <select
+              onWheel={(e) => e.currentTarget.blur()} className="form-select" value={s.processing_status} onChange={edit('processing_status')}>
             <option value="accuracy_estimated">estimated</option>
             <option value="harmonized">measured / from the data sheet</option>
           </select>

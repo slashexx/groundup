@@ -1820,7 +1820,10 @@ a {
   background: var(--bg-primary);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  /* The wizard is taller than a short window, and `hidden` made everything below the
+     fold unreachable - including the Continue button, so the app could not be used at
+     all on a laptop screen. */
+  overflow-y: auto;
 }
 
 .project-header {
