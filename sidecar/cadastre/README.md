@@ -166,7 +166,7 @@ sidecar/cadastre/
 
 ### 4.1 REST API Reference ([`api.py`](./api.py))
 
-Seventeen operations across sixteen paths on `http://127.0.0.1:8000`, served by
+Nineteen operations across seventeen paths on `http://127.0.0.1:8000`, served by
 `cadastre.app:app` — **not** `cadastre.api:router`, which uvicorn starts happily and
 then answers 500 on every request. Interactive docs at `/docs`; `GET /` enumerates the
 paths from the router itself.
@@ -243,6 +243,56 @@ handle is a file the operator selects and the project silently ignores.
   tile, never the tile itself.
 
 ---
+
+#### `POST /cadastre/sources`
+
+Appends sources to a project that already exists, and by default re-ingests so the new
+layers become units. This is what an operator uses when the footprints arrive after the
+parcels, or when elevation shows up later.
+
+```json
+{
+ "db_path": "ward42.gpkg",
+ "ingest": true,
+ "sources": [
+   {"path": "/data/buildings.geojson", "source_type": "footprint",
+    "name": "Municipal footprint survey", "provider": "ULB",
+    "capture_date": "2026-03-14", "crs": "EPSG:4326",
+    "vertical_datum": "EGM2008",
+    "horizontal_accuracy_m": 2.0, "vertical_accuracy_m": 5.0}
+ ]
+}
+```
+
+No project settings are accepted here, on purpose. The CRS, vertical datum and strata were
+decided once at creation and every unit already carries them; letting a later upload
+restate them would let two halves of one project disagree about where they are.
+
+Nothing is deleted. Re-ingesting is safe to repeat because units are matched on their
+source-local id, so adding footprints to a project that already holds its parcels keeps
+those parcels and every identifier issued against them — the response reports `created`
+and `reused` separately so it is visible which happened.
+
+`404` if the path holds no project, `409` if it holds one the ingest block never finished
+writing, `422` if a file is unreadable or missing.
+
+#### `GET /cadastre/project`
+
+Opens a project that already exists, and reports what it holds. Read-only: a path that is
+not a project is refused rather than initialised as a blank one there.
+
+```json
+{
+ "db_path": "/data/ward42.gpkg", "name": "ward42",
+ "project_crs": "EPSG:32643", "vertical_datum": "EGM2008",
+ "units": 5949, "unit_counts": {"land_parcel": 36, "building": 910, "floor": 5003},
+ "sources": ["SRC-PARCEL-MAP-5dc19b", "SRC-FOOTPRINT-108ec4"]
+}
+```
+
+Creating a project and opening one are different operations, and P1 only had the first.
+A project built yesterday could be reached only by running the wizard over the same file
+again — which is how the wizard came to overwrite one.
 
 #### `POST /cadastre/project`
 

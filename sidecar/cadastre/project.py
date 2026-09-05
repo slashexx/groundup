@@ -213,3 +213,70 @@ def _units_held(gpkg: Path) -> int:
             conn.close()
     except sqlite3.Error:
         return 0
+
+
+def add_sources(gpkg: Path, settings, sources: list) -> CreatedProject:
+    """Add sources to a project that already exists.
+
+    Creation and addition are the same work in a different order: `create` writes the
+    project settings first because nothing has stamped them yet, and this reads them back
+    because the operator set them once and every unit already carries them. Letting a
+    later upload restate the CRS would let two halves of one project disagree about where
+    they are.
+
+    Nothing is deleted. The GeoPackage is opened, a layer is appended, and the caller
+    re-ingests - so adding a footprint layer to a project that already holds its parcels
+    keeps the parcels, and their identifiers with them.
+    """
+    from run_pipeline import GeoDataPipeline
+
+    if not gpkg.exists():
+        raise ProjectCreateError(
+            f"{gpkg} does not exist. Create the project before adding to it.")
+    if not sources:
+        raise ProjectCreateError("no sources to add.")
+
+    missing = [s.path for s in sources if not Path(s.path).exists()]
+    if missing:
+        raise ProjectCreateError("file not found: " + ", ".join(missing))
+
+    out = CreatedProject(db_path=str(gpkg))
+    pipeline = GeoDataPipeline(gpkg_output_path=str(gpkg), target_crs=settings.project_crs)
+
+    for s in (x for x in sources if x.source_type in VECTOR_LAYERS):
+        layer = VECTOR_LAYERS[s.source_type]
+        ok = pipeline.process_file(
+            s.path, layer, s.source_id, s.source_type,
+            source_name=s.name,
+            horizontal_accuracy_m=s.horizontal_accuracy_m,
+            vertical_accuracy_m=s.vertical_accuracy_m,
+        )
+        if not ok:
+            raise ProjectCreateError(
+                f"P2 could not read {Path(s.path).name} as a {layer} layer. Check that it "
+                "is a vector file with a CRS its driver can report.")
+        out.sources.append(s.source_id)
+        out.layers.append(layer)
+
+    conn = sqlite3.connect(gpkg)
+    try:
+        for s in sources:
+            if s.source_type in VECTOR_LAYERS:
+                continue
+            _register_source(conn, s)
+            out.sources.append(s.source_id)
+            if s.source_type in RASTER_KINDS:
+                conn.execute(
+                    "INSERT OR REPLACE INTO raster (raster_id, kind, path, crs, "
+                    "vertical_datum, resolution_m, source_id) VALUES (?,?,?,?,?,?,?)",
+                    (f"RST-{s.source_id}", RASTER_KINDS[s.source_type], s.path, s.crs,
+                     s.vertical_datum, s.resolution_m or s.horizontal_accuracy_m,
+                     s.source_id))
+                out.rasters.append(s.source_id)
+            else:
+                out.registered_only.append(s.source_id)
+        conn.commit()
+    finally:
+        conn.close()
+
+    return out

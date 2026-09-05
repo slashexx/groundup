@@ -153,7 +153,8 @@ def test_the_api_reference_states_the_route_count_correctly():
     readme = (pathlib.Path(__file__).resolve().parents[1] / "README.md").read_text()
     served = {(m, r.path) for r in router.routes
               for m in getattr(r, "methods", set()) - {"HEAD", "OPTIONS"}}
-    words = {14: "Fourteen", 15: "Fifteen", 16: "Sixteen", 17: "Seventeen"}
+    words = {14: "Fourteen", 15: "Fifteen", 16: "Sixteen", 17: "Seventeen",
+             18: "Eighteen", 19: "Nineteen", 20: "Twenty"}
     stated = re.search(r"(\w+) operations across (\w+) paths", readme)
 
     assert stated, "the reference no longer states how many routes it covers"

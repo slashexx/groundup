@@ -5,8 +5,9 @@
  *
  *     ./.venv/bin/python -m uvicorn cadastre.app:app --app-dir sidecar --port 8000
  *
- * Everything here is read-only except `transition` and `acknowledge`, which are the two
- * actions a reviewer takes. Contract shapes come from `contracts/outbound/*.schema.json`.
+ * Every route that changes the project is named for the decision it records — a reviewer
+ * acknowledging a warning, approving a unit, accepting a suggestion — or for the pipeline
+ * step it runs. Contract shapes come from `contracts/outbound/*.schema.json`.
  *
  * When the sidecar is not running, callers get nothing and the UI SAYS SO. There is no
  * sample data to fall back to any more — a screen that silently shows invented numbers
@@ -64,7 +65,12 @@ async function request(path, { method = 'GET', body, params } = {}) {
     } catch {
       /* a non-JSON error body is still an error; keep the status line */
     }
-    throw new Error(detail)
+    // The code rides along because a caller sometimes has to tell refusals apart: a 404
+    // from `/runs/latest` means validation has never run, which is a different screen
+    // from one where the call itself failed.
+    const err = new Error(detail)
+    err.status = res.status
+    throw err
   }
   return res.json()
 }
@@ -79,6 +85,12 @@ export const cadastre = {
 
   /** Import P2's harmonized GeoPackage. Repeatable — identities are not re-minted. */
   ingest: () => request('/cadastre/ingest', { method: 'POST', body: { db_path: DB } }),
+
+  //: Append sources to a project that already exists, and re-ingest. Re-ingesting is
+  //  safe to repeat: units match on their source-local id, so the parcels a project
+  //  already holds survive with the identifiers issued against them.
+  addSources: (sources) =>
+    request('/cadastre/sources', { method: 'POST', body: { db_path: DB, sources } }),
 
   /** Run every validation rule over the project and persist the run. */
   validate: () => request('/cadastre/validate', { method: 'POST', body: { db_path: DB } }),
@@ -101,6 +113,36 @@ export const cadastre = {
 
   resolveUlpin: (ulpin) => request(`/cadastre/ulpin/${encodeURIComponent(ulpin)}`),
 
+  /** Give imported buildings a height range, and optionally a floor stack, from the
+   *  project's registered rasters. `estimateFloors` divides each envelope by an assumed
+   *  storey height — a guess, which the sidecar records as one on every unit it makes. */
+  derive: (estimateFloors) =>
+    request('/cadastre/derive', {
+      method: 'POST',
+      body: { db_path: DB, estimate_floors: estimateFloors },
+    }),
+
+  /** Run P3 over the project's rasters and queue what it finds. Answers 503 when P3 is
+   *  not installed in this environment, which is a different thing from finding nothing
+   *  and is shown as such. Nothing here becomes a unit. */
+  detect: () => request('/cadastre/detect', { method: 'POST', body: { db_path: DB } }),
+
+  /** The AI review queue. `state` narrows it; omitted, everything comes back. */
+  suggestions: (state) => request('/cadastre/suggestions', { params: { state } }),
+
+  /** Accept or reject one suggestion. `edited` is not offered here because it must carry
+   *  a corrected outline, and this app has no geometry editor to produce one. */
+  reviewSuggestion: (suggestionId, state, actor) =>
+    request(`/cadastre/suggestions/${encodeURIComponent(suggestionId)}/review`, {
+      method: 'POST',
+      body: { state, actor },
+    }),
+
+  /** Turn every accepted or edited suggestion into a building unit. Pending and rejected
+   *  ones are skipped rather than refused. */
+  applySuggestions: () =>
+    request('/cadastre/suggestions/apply', { method: 'POST', body: { db_path: DB } }),
+
   /** What a project may be built from. Served by the sidecar rather than hardcoded here,
    *  so the wizard's form and `project.py` cannot drift: a type this form offers but the
    *  module does not handle is a file the operator picks and the project silently drops. */
@@ -116,6 +158,11 @@ export const cadastre = {
    *  those two numbers, so a default would make each source claim survey grade. */
   createProject: (payload) =>
     request('/cadastre/project', { method: 'POST', body: payload, params: { db_path: null } }),
+
+  /** Open a project that already exists. Read-only: it reports what the file holds and
+   *  refuses one that is not a project, rather than initialising a blank one there. */
+  openProject: (dbPath) =>
+    request('/cadastre/project', { params: { db_path: dbPath } }),
 }
 
 // --- shaping the contract for these screens ------------------------------------------
@@ -191,6 +238,7 @@ export function reviewRows(doc) {
         type: UNIT_TYPE_LABELS[u.unit_type] ?? u.unit_type,
         floor: u.attributes?.floor_index ?? null,
         createdBy: u.created_by,
+        recordedFrom: u.recorded_from ?? null,
         confidence: u.confidence_score,
         validationState: u.validation_state,
         errors,
@@ -224,4 +272,101 @@ export function searchRows(doc, query) {
       r.unitId.toLowerCase().includes(q) ||
       r.type.toLowerCase().includes(q),
   )
+}
+
+/** Suggestions, in the shape the AI results list renders.
+ *
+ * `confidence` arrives as 0..1 and is rendered as a percentage; the conversion happens
+ * once, here, because a bar drawn at `width: 0.87%` is indistinguishable from a model
+ * that found nothing it believed in.
+ */
+export function suggestionRows(list) {
+  return (list ?? []).map((s) => ({
+    id: s.suggestion_id,
+    short: s.suggestion_id.slice(0, 8),
+    kind: s.kind,
+    confidence: s.confidence === null || s.confidence === undefined ? null : s.confidence * 100,
+    modelVersion: `${s.model?.name ?? 'unknown'} ${s.model?.version ?? ''}`.trim(),
+    runAt: s.model?.run_at ?? null,
+    rasters: s.source_raster_ids ?? [],
+    // A suggestion that has already produced a unit is settled: the review endpoint
+    // answers 409, so the buttons come off rather than offering a decision that is gone.
+    unitId: s.unit_id ?? null,
+    status: s.review?.state ?? 'pending',
+    reviewedBy: s.review?.reviewed_by ?? null,
+    attributes: s.attributes ?? {},
+  }))
+}
+
+// --- export serialisers ---------------------------------------------------------------
+//
+// Only formats derivable from the outbound document without inventing anything live
+// here. CityGML, IFC and KML need a semantic model this block does not hold, and the
+// screen says so on the card rather than writing a file that is a rename of another one.
+
+/** Units as a GeoJSON FeatureCollection.
+ *
+ * The geometry is left in the project CRS, in metres, because that is what
+ * `contracts/outbound/unit.schema.json` carries and reprojecting to WGS84 here would put
+ * a second, unrecorded transform in the chain. The named CRS member is the pre-RFC-7946
+ * form, deliberately: RFC 7946 has no way to state a projected frame, and a reader that
+ * assumes degrees would place these polygons in the Gulf of Guinea.
+ */
+export function unitsToGeoJson(units, crs) {
+  return {
+    type: 'FeatureCollection',
+    crs: { type: 'name', properties: { name: crs } },
+    features: units
+      .filter((u) => u.footprint_2d)
+      .map((u) => ({
+        type: 'Feature',
+        id: u.unit_id,
+        geometry: u.footprint_2d,
+        properties: {
+          unit_id: u.unit_id,
+          ulpin: u.ulpin ?? null,
+          ulpin_provisional: u.ulpin_provisional ?? null,
+          unit_type: u.unit_type,
+          status: u.status,
+          validation_state: u.validation_state,
+          lower_limit: u.lower_limit,
+          upper_limit: u.upper_limit,
+          vertical_datum: u.vertical_datum,
+          created_by: u.created_by,
+          confidence_score: u.confidence_score ?? null,
+          floor_index: u.attributes?.floor_index ?? null,
+        },
+      })),
+  }
+}
+
+const CSV_COLUMNS = [
+  ['unit_id', (u) => u.unit_id],
+  ['ulpin', (u) => u.ulpin ?? ''],
+  ['ulpin_provisional', (u) => u.ulpin_provisional ?? ''],
+  ['unit_type', (u) => u.unit_type],
+  ['status', (u) => u.status],
+  ['validation_state', (u) => u.validation_state],
+  ['lower_limit_m', (u) => u.lower_limit],
+  ['upper_limit_m', (u) => u.upper_limit],
+  ['crs', (u) => u.crs],
+  ['vertical_datum', (u) => u.vertical_datum],
+  ['created_by', (u) => u.created_by],
+  ['confidence_score', (u) => u.confidence_score],
+  ['floor_index', (u) => u.attributes?.floor_index],
+  ['recorded_from', (u) => u.recorded_from ?? ''],
+]
+
+/** Units as CSV. Geometry is omitted rather than stringified into a cell — a spreadsheet
+ *  holding a polygon in one column is not a geospatial export, and offering it as one is
+ *  how the wrong file reaches a surveyor. */
+export function unitsToCsv(units) {
+  const cell = (v) => {
+    if (v === null || v === undefined) return ''
+    const s = String(v)
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+  }
+  const lines = [CSV_COLUMNS.map(([name]) => name).join(',')]
+  for (const u of units) lines.push(CSV_COLUMNS.map(([, read]) => cell(read(u))).join(','))
+  return lines.join('\n')
 }

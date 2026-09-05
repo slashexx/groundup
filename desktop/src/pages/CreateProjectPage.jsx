@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { Icons } from '../components/Icons';
-import { SidecarUnavailable, cadastre } from '../data/cadastreApi';
+import { SidecarUnavailable, cadastre, setProjectPath } from '../data/cadastreApi';
 
 /**
  * Create a project from the operator's own data.
@@ -118,6 +118,45 @@ export default function CreateProjectPage({ onCreated }) {
     ruleset_version: 'r1',
   });
   const [sources, setSources] = useState([]);
+
+  /** Opening an existing project. The wizard was the only entrance, which meant a
+   *  project built yesterday could only be reached by building it again over the same
+   *  file - which is how it came to be overwritten. */
+  const [opening, setOpening] = useState(false);
+
+  async function openExisting() {
+    setError(null);
+    let picked;
+    try {
+      picked = await open({
+        multiple: false,
+        filters: [{ name: 'Cadastre project', extensions: ['gpkg'] }],
+      });
+    } catch (e) {
+      // Same fallback the source picker already offers: a dialog that will not open is
+      // not a reason to be unable to open a project.
+      picked = window.prompt(`Could not open the file chooser (${e}). Paste the full path to the .gpkg:`);
+      if (!picked) return;
+    }
+    if (!picked) return;
+    const path = Array.isArray(picked) ? picked[0] : picked;
+    setOpening(true);
+    try {
+      // Ask the sidecar what the file holds before claiming it as the active project. A
+      // path that is not a project is refused here, not discovered three screens later
+      // by a dashboard rendering zeroes.
+      setProjectPath(path);
+      const info = await cadastre.openProject(path);
+      onCreated({ ...info, location: '' });
+    } catch (e) {
+      setProjectPath(null);
+      setError(e instanceof SidecarUnavailable
+        ? 'The cadastre sidecar is not running, so the project cannot be read.'
+        : e.message);
+    } finally {
+      setOpening(false);
+    }
+  }
 
   // Ask the sidecar what it accepts rather than trusting the table above.
   useEffect(() => {
@@ -262,6 +301,9 @@ export default function CreateProjectPage({ onCreated }) {
             A project is one ward, village or city block, and everything measured within it.
           </span>
         </div>
+        <button className="btn btn-secondary" onClick={openExisting} disabled={opening}>
+          {opening ? 'Opening…' : 'Open existing project…'}
+        </button>
       </div>
 
       <div className="wizard-steps" style={{ marginBottom: 24 }}>
