@@ -59,6 +59,10 @@ class SourceInput(BaseModel):
 
 
 class ProjectCreateRequest(BaseModel):
+    #: Destroy an existing project at this path. Off by default:
+    #: overwriting discards issued identifiers and the ledger that
+    #: proves they were never reused.
+    overwrite: bool = False
     """Everything the P1 wizard collects. Mirrors `project_settings` plus the sources."""
 
     db_path: str
@@ -494,7 +498,12 @@ def create_project(req: ProjectCreateRequest) -> dict[str, Any]:
             s.source_id = project.new_source_id(s.source_type)
 
     try:
-        made = project.create(Path(req.db_path), settings, req.sources)
+        made = project.create(Path(req.db_path), settings, req.sources,
+                              overwrite=req.overwrite)
+    except project.ProjectExists as err:
+        # 409, not 422: the request is well formed, the destination is occupied. The
+        # caller must decide to destroy what is there; we do not decide for them.
+        raise HTTPException(409, str(err)) from err
     except project.ProjectCreateError as err:
         raise HTTPException(422, str(err)) from err
 
