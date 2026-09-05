@@ -1,3 +1,4 @@
+import { useNavigate } from 'react-router-dom';
 import { useState } from 'react';
 import { Icons } from '../components/Icons';
 import { UNIT_TYPE_LABELS, searchRows } from '../data/cadastreApi';
@@ -8,6 +9,7 @@ const LIVE_TYPES = ['All Types', ...Object.values(UNIT_TYPE_LABELS)];
 const LIVE_STATUSES = ['All Status', 'draft', 'processing', 'needs_review', 'approved', 'replaced', 'closed'];
 
 export default function SearchPage() {
+  const navigate = useNavigate();
   const { doc, live, status: loadStatus, error: loadError, reload } = useCadastreDocument();
   const [query, setQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState('All Types');
@@ -133,7 +135,7 @@ export default function SearchPage() {
                   </div>
                 </div>
                 <span className={`status-badge ${result.status.toLowerCase()}`}>{result.status}</span>
-                <button className="btn btn-secondary btn-sm">
+                <button className="btn btn-secondary btn-sm" onClick={() => navigate('/map-2d')}>
                   <Icons.Map2D style={{ width: 14, height: 14 }} /> View on Map
                 </button>
               </div>

@@ -67,7 +67,7 @@ export default function UploadDataPage() {
         <div className="upload-dropzone-subtitle">
           Supports GeoJSON, Shapefile, GeoTIFF, LAS/LAZ, DXF, PDF, JPEG/PNG
         </div>
-        <button className="btn btn-primary" style={{ marginTop: 8 }}>
+        <button className="btn btn-primary" style={{ marginTop: 8 }} disabled title="Not built yet">
           <Icons.Upload style={{ width: 14, height: 14 }} />
           Browse Files
         </button>
@@ -129,7 +129,7 @@ export default function UploadDataPage() {
           </div>
         </div>
         <div style={{ flex: 1 }} />
-        <button className="btn btn-primary">Process Ready Files</button>
+        <button className="btn btn-primary" disabled title="Add sources when creating a project; adding them later is not built yet">Process Ready Files</button>
       </div>
     </div>
   );

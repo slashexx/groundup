@@ -40,12 +40,27 @@ function useProjectGeometry() {
   }, [doc]);
 }
 
-/** Frame the project once its geometry arrives. */
+/** Frame the project once its geometry arrives, and answer the toolbar. */
 function FitToProject({ bounds }) {
   const map = useMap();
   useEffect(() => {
     if (bounds) map.fitBounds(bounds, { padding: [40, 40] });
   }, [bounds, map]);
+
+  // The toolbar owns no map instance, so it asks by event and this answers.
+  useEffect(() => {
+    const zoomIn = () => map.zoomIn();
+    const zoomOut = () => map.zoomOut();
+    const fit = () => bounds && map.fitBounds(bounds, { padding: [40, 40] });
+    window.addEventListener('map-zoom-in', zoomIn);
+    window.addEventListener('map-zoom-out', zoomOut);
+    window.addEventListener('map-fit-project', fit);
+    return () => {
+      window.removeEventListener('map-zoom-in', zoomIn);
+      window.removeEventListener('map-zoom-out', zoomOut);
+      window.removeEventListener('map-fit-project', fit);
+    };
+  }, [map, bounds]);
   return null;
 }
 
@@ -203,13 +218,14 @@ function PropertyPanel({ property, onClose }) {
         <div className="property-section">
           <div className="property-section-title">Actions</div>
           <div className="property-actions">
-            <button className="btn btn-secondary btn-sm">
+            <button className="btn btn-secondary btn-sm" onClick={() => navigate('/map-3d')}>
               <Icons.Map3D style={{ width: 14, height: 14 }} /> View in 3D
             </button>
-            <button className="btn btn-secondary btn-sm">
+            <button className="btn btn-secondary btn-sm" disabled
+                    title="Editing a unit is not built yet">
               <Icons.Pencil style={{ width: 14, height: 14 }} /> Edit
             </button>
-            <button className="btn btn-secondary btn-sm">
+            <button className="btn btn-secondary btn-sm" onClick={() => navigate('/history')}>
               <Icons.History style={{ width: 14, height: 14 }} /> Open History
             </button>
           </div>
@@ -550,7 +566,9 @@ export default function MapPage({ project, view = '2d' }) {
               </button>
             )}
             {[Icons.Cursor, Icons.Crosshair, Icons.Ruler, Icons.Pencil, Icons.Move].map((Ic, i) => (
-              <button key={i} className="map-floating-btn" style={{ width: 26, height: 26 }}>
+              <button key={i} className="map-floating-btn" disabled
+                      title="Map tools are not built yet"
+                      style={{ width: 26, height: 26 }}>
                 <Ic style={{ width: 13, height: 13 }} />
               </button>
             ))}

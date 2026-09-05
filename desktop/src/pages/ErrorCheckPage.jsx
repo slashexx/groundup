@@ -137,7 +137,7 @@ export default function ErrorCheckPage() {
                   </td>
                   <td>
                     <div style={{ display: 'flex', gap: 4 }}>
-                      <button className="btn btn-ghost btn-sm" title="View on Map">
+                      <button className="btn btn-ghost btn-sm" title="View on Map" disabled title="Not built yet">
                         <Icons.Map2D style={{ width: 14, height: 14 }} />
                       </button>
                       {live && err.type === 'warning' && !err.acknowledgedBy && (
@@ -147,7 +147,7 @@ export default function ErrorCheckPage() {
                           Ack
                         </button>
                       )}
-                      <button className="btn btn-ghost btn-sm" title="Fix">
+                      <button className="btn btn-ghost btn-sm" title="Fix" disabled title="Not built yet">
                         <Icons.Pencil style={{ width: 14, height: 14 }} />
                       </button>
                     </div>

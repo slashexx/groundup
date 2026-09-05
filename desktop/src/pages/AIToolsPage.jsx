@@ -136,7 +136,7 @@ export default function AIToolsPage() {
                     <button className="btn btn-success btn-sm" onClick={() => handleAccept(result.id)}>
                       <Icons.Check style={{ width: 12, height: 12 }} /> Accept
                     </button>
-                    <button className="btn btn-secondary btn-sm">
+                    <button className="btn btn-secondary btn-sm" disabled title="Editing is not built yet">
                       <Icons.Pencil style={{ width: 12, height: 12 }} /> Edit
                     </button>
                     <button className="btn btn-danger btn-sm" onClick={() => handleReject(result.id)}>

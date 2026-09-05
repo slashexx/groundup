@@ -2855,3 +2855,23 @@ a {
 .basemap-dark {
   filter: invert(1) hue-rotate(180deg) brightness(0.85) contrast(0.9) saturate(0.6);
 }
+
+
+/* A disabled control must look disabled.
+   Continue sat at full opacity while disabled, so it read as clickable, did nothing when
+   clicked, and gave no reason. "The button is broken" is the only conclusion available
+   to someone looking at it. */
+.btn:disabled,
+.btn[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+  filter: saturate(0.4);
+}
+
+/* Why a step cannot be advanced yet, next to the control that is refusing. */
+.wizard-blocker {
+  font-size: 12px;
+  color: var(--text-muted, #94a3b8);
+  margin-right: 12px;
+  align-self: center;
+}

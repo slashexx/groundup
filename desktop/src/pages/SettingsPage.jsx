@@ -118,7 +118,7 @@ export default function SettingsPage({ project }) {
       <div className="settings-section">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, paddingBottom: 8, borderBottom: '1px solid var(--border-primary)' }}>
           <span style={{ fontSize: 'var(--text-lg)', fontWeight: 600, color: 'var(--text-primary)' }}>User Management</span>
-          <button className="btn btn-secondary btn-sm">
+          <button className="btn btn-secondary btn-sm" disabled title="User management is not built yet">
             <Icons.Plus style={{ width: 12, height: 12 }} /> Add User
           </button>
         </div>
@@ -153,8 +153,8 @@ export default function SettingsPage({ project }) {
                   </td>
                   <td>
                     <div style={{ display: 'flex', gap: 4 }}>
-                      <button className="btn btn-ghost btn-sm"><Icons.Pencil style={{ width: 12, height: 12 }} /></button>
-                      <button className="btn btn-ghost btn-sm"><Icons.Close style={{ width: 12, height: 12 }} /></button>
+                      <button className="btn btn-ghost btn-sm" disabled title="Not built yet"><Icons.Pencil style={{ width: 12, height: 12 }} /></button>
+                      <button className="btn btn-ghost btn-sm" disabled title="Not built yet"><Icons.Close style={{ width: 12, height: 12 }} /></button>
                     </div>
                   </td>
                 </tr>

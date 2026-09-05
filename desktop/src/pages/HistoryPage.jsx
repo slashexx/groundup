@@ -47,7 +47,7 @@ export default function HistoryPage() {
           <input className="form-input" type="text" placeholder="Search history..."
             value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
             style={{ width: 250 }} />
-          <button className="btn btn-secondary">
+          <button className="btn btn-secondary" disabled title="Exporting the activity log is not built yet">
             <Icons.Download style={{ width: 14, height: 14 }} /> Export Log
           </button>
         </div>

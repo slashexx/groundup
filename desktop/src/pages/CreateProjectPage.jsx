@@ -187,6 +187,20 @@ export default function CreateProjectPage({ onCreated }) {
   const hasVector = sources.some((s) => ['parcel_map', 'footprint', 'utility'].includes(s.source_type));
   const canAdvance = step === 0 ? p.name.trim() && p.db_path.trim() : step === 1 ? hasVector : true;
 
+  // Say what is missing, beside the control that is refusing to move. A disabled button
+  // with no reason beside it is indistinguishable from a broken one.
+  const blocker = (() => {
+    if (canAdvance) return null;
+    if (step === 0) {
+      const need = [];
+      if (!p.name.trim()) need.push('a project name');
+      if (!p.db_path.trim()) need.push('a project file');
+      return `Needs ${need.join(' and ')}.`;
+    }
+    if (step === 1) return 'Needs at least one parcel, footprint or utility layer.';
+    return null;
+  })();
+
   async function chooseDestination() {
     let path;
     try {
@@ -442,9 +456,12 @@ export default function CreateProjectPage({ onCreated }) {
           <button className="btn btn-ghost" onClick={() => setStep(step - 1)} disabled={busy}>Back</button>
         )}
         {step < STEPS.length - 1 ? (
-          <button className="btn btn-primary" disabled={!canAdvance} onClick={() => setStep(step + 1)}>
-            Continue
-          </button>
+          <>
+            {blocker && <span className="wizard-blocker">{blocker}</span>}
+            <button className="btn btn-primary" disabled={!canAdvance} onClick={() => setStep(step + 1)}>
+              Continue
+            </button>
+          </>
         ) : (
           <button className="btn btn-primary" disabled={busy || !hasVector} onClick={create}>
             {busy ? 'Creating…' : 'Create project'}
