@@ -57,6 +57,16 @@ REGISTER_ONLY = {"pointcloud", "floorplan", "survey_control"}
 SOURCE_TYPES = set(VECTOR_LAYERS) | set(RASTER_KINDS) | REGISTER_ONLY
 
 
+class ProjectExists(RuntimeError):
+    """A project already lives at this path and creating over it would destroy it.
+
+    Overwriting is not merely losing work. An issued ULPIN is a permanent claim about
+    real property, and the ledger is what proves one was never handed out twice; deleting
+    the file discards both. This is the one irreversible thing this block can do, so it
+    does not happen by default and never happens silently.
+    """
+
+
 class ProjectCreateError(Exception):
     """The project could not be built. Carries a message meant for the operator."""
 
@@ -83,7 +93,8 @@ def _register_source(conn: sqlite3.Connection, s, coverage_wkt: str = "") -> Non
     )
 
 
-def create(gpkg: Path, settings, sources: list) -> CreatedProject:
+def create(gpkg: Path, settings, sources: list, *,
+           overwrite: bool = False) -> CreatedProject:
     """Build a project GeoPackage from `settings` and the operator's `sources`.
 
     Vector sources go through P2's harmonizer so everything lands in the project CRS in
@@ -92,6 +103,19 @@ def create(gpkg: Path, settings, sources: list) -> CreatedProject:
     and `raster.path` exists precisely to point at one.
     """
     from run_pipeline import GeoDataPipeline  # P2, resolved via sys.path above
+
+
+    # Asked before anything else, including whether the sources exist. A caller with a
+    # typo in a source path should be told about the typo; a caller whose paths are all
+    # valid should not have their existing project deleted on the way to finding out.
+    if not overwrite:
+        held = _units_held(gpkg)
+        if held:
+            raise ProjectExists(
+                f"{gpkg} already holds {held} unit(s). Creating a project here would "
+                "delete them, along with every identifier they have been issued and the "
+                "ledger proving those were never reused. Choose another path, or pass "
+                "overwrite explicitly, having decided that is what you want.")
 
     if not sources:
         raise ProjectCreateError(
@@ -171,3 +195,21 @@ def create(gpkg: Path, settings, sources: list) -> CreatedProject:
 def new_source_id(source_type: str) -> str:
     """A readable, unique source id. Readable because it shows up in every finding."""
     return f"SRC-{source_type.upper().replace('_', '-')}-{uuid.uuid4().hex[:6]}"
+
+
+def _units_held(gpkg: Path) -> int:
+    """How many units an existing GeoPackage already holds, 0 if it holds none.
+
+    A path that is absent, unreadable, or not one of our projects is not something we
+    would be destroying, so it counts as empty.
+    """
+    if not gpkg.exists():
+        return 0
+    try:
+        conn = sqlite3.connect(f"file:{gpkg}?mode=ro", uri=True)
+        try:
+            return int(conn.execute("SELECT count(*) FROM unit").fetchone()[0])
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return 0

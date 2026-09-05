@@ -115,6 +115,9 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
      "approval permitted with no validation recorded"),
     ("ulpin/lifecycle.py", "        if not run.approvable(unit.unit_id):", "        if False:",
      "approval permitted despite errors or unacknowledged warnings"),
+    ("project.py", "    if not overwrite:\n        held = _units_held(gpkg)\n",
+     "    if False:\n        held = 0\n",
+     "a project created over another, destroying its issued identifiers"),
     ("store.py", '    if row["severity"] == Severity.ERROR.value:', "    if False:",
      "errors acknowledged away instead of fixed"),
 
