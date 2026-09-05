@@ -23,10 +23,11 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 import shapely.geometry
+import shapely.wkb
 
 from . import suggestions
 from .ingest_gpkg import MAJORITY
-from .models import ProjectSettings
+from .models import ProjectSettings, UnitType
 
 #: What `sidecar/ai` needs installed. Declared in its `pyproject.toml`, but nothing
 #: installs it into the shared venv, so the failure has to name the fix.
@@ -60,6 +61,9 @@ class DetectReport:
     already_reviewed: list[str] = field(default_factory=list)
     #: Suggestions already in the project that this run found again, by their existing id.
     rediscovered: list[str] = field(default_factory=list)
+    #: Detections matching a building the project already holds. Not offered for review:
+    #: the question is settled, and a queue full of settled questions is one nobody reads.
+    already_mapped: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -67,7 +71,38 @@ class DetectReport:
             "found": self.found, "stored": self.stored,
             "already_reviewed": self.already_reviewed,
             "rediscovered": self.rediscovered,
+            "already_mapped": self.already_mapped,
         }
+
+
+def already_mapped(conn: sqlite3.Connection, geom) -> str | None:
+    """The building unit already in this project that `geom` is another sighting of.
+
+    `_rediscovery` compares a detection against other *suggestions*, which stops pressing
+    the button twice from stacking outlines but cannot see the register. On the Trivandrum
+    pilot that gap showed plainly: 910 buildings imported from footprints, then detect
+    returned 727 suggestions of which every single one overlapped an existing building,
+    with `rediscovered` empty throughout.
+
+    A queue of 727 items that are all already mapped is worse than an empty one - it is a
+    reviewer being asked 727 times about work that is done, which is how people learn to
+    click past a queue without reading it.
+
+    Same test as `_rediscovery`, and deliberately the same threshold: each footprint more
+    than half inside the other, symmetric, so a large detection cannot swallow a small
+    building or the reverse.
+    """
+    for row in conn.execute(
+        "SELECT unit_id, footprint_wkb FROM unit WHERE unit_type = ?",
+        (UnitType.BUILDING.value,),
+    ):
+        other = shapely.wkb.loads(row["footprint_wkb"])
+        if geom.area <= 0 or other.area <= 0:
+            continue
+        shared = geom.intersection(other).area
+        if shared > MAJORITY * geom.area and shared > MAJORITY * other.area:
+            return row["unit_id"]
+    return None
 
 
 def _rediscovery(conn: sqlite3.Connection, geom) -> str | None:
@@ -166,7 +201,16 @@ def run(conn: sqlite3.Connection, settings: ProjectSettings, *,
 
     fresh = []
     for raw in found:
-        seen = _rediscovery(conn, shapely.geometry.shape(raw["geometry"]))
+        geom = shapely.geometry.shape(raw["geometry"])
+
+        # Asked before the suggestion-level check: a building already in the register is
+        # settled, and re-offering it is not a duplicate question but a pointless one.
+        mapped = already_mapped(conn, geom)
+        if mapped is not None:
+            report.already_mapped.append(mapped)
+            continue
+
+        seen = _rediscovery(conn, geom)
         if seen is not None:
             report.rediscovered.append(seen)
             continue

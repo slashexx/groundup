@@ -223,6 +223,12 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
      "    if ground is not None and roof is not None:", "    if ground is not None or roof is not None:",
      "half a height treated as a height"),
     ("detect.py",
+     ("        mapped = already_mapped(conn, geom)\n"
+      "        if mapped is not None:\n"
+      "            report.already_mapped.append(mapped)\n"
+      "            continue\n"), "",
+     "a review queue filled with buildings the project already holds"),
+    ("detect.py",
      ("        return process_ndsm_detection(ndsm, dsm, dem, raster_ids, crs=crs,\n"
       "                                      transform=transform)"),
      "        return process_ndsm_detection(ndsm, dsm, dem, raster_ids, crs=crs)",
@@ -232,9 +238,9 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
      "    got = suggestions.ReceiveReport(len(fresh), len(fresh))",
      "detector output reaching the queue without passing the contract gate"),
     ("detect.py",
-     ("        seen = _rediscovery(conn, shapely.geometry.shape(raw[\"geometry\"]))\n"
+     ("        seen = _rediscovery(conn, geom)\n"
       "        if seen is not None:"),
-     ("        seen = _rediscovery(conn, shapely.geometry.shape(raw[\"geometry\"]))\n"
+     ("        seen = _rediscovery(conn, geom)\n"
       "        if False:"),
      "pressing detect again re-asking a question somebody already settled"),
     ("detect.py",
