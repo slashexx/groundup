@@ -141,6 +141,49 @@ def _provisional(
     return format_ulpin(parent_ulpin_14, version, stratum, level, seq)
 
 
+#: Columns a re-ingest must never overwrite on a unit it is only refreshing.
+#:
+#: Ingest reads P2's flat layers, which carry no elevation and no decision, so it builds
+#: every unit with `lower_limit=None`, `status=needs_review` and no ULPIN. Written through
+#: `save_unit`'s INSERT OR REPLACE, that erased whatever the project had learned since the
+#: last import: registering a DEM through the Upload Data screen re-ingested the footprint
+#: layer and reset all 910 buildings' derived height ranges to NULL, which surfaced only as
+#: a 3D view that had gone empty. The same replace discarded issued ULPINs and reset
+#: approved units to needs_review - a land record silently un-approving itself.
+#:
+#: Re-ingest is a refresh of what the source says, not a reset of what the project knows.
+_PRESERVED = (
+    "lower_limit", "upper_limit",          # derive's work; ingest has no raster
+    "ulpin", "ulpin_version",              # issued at approval and frozen
+    "status", "validation_state", "dispute_state",   # decisions, not source facts
+    "confidence_score",
+)
+
+
+def _carry_forward(conn: sqlite3.Connection, unit: Unit) -> None:
+    """Copy the fields ingest cannot re-derive from the stored row onto `unit`.
+
+    Only for units that already exist. A field the source genuinely restates - geometry,
+    source ids, the attributes read off the layer - is left alone and does get refreshed.
+    """
+    row = conn.execute(
+        "SELECT " + ", ".join(_PRESERVED) + " FROM unit WHERE unit_id = ?",
+        (unit.unit_id,),
+    ).fetchone()
+    if row is None:
+        return
+    for col in _PRESERVED:
+        stored = row[col]
+        if stored is None:
+            continue
+        current = getattr(unit, col, None)
+        # Enum-valued columns come back as strings; rebuild them through the same type
+        # the unit already holds so the record stays typed.
+        if hasattr(current, "value") and not isinstance(stored, type(current)):
+            stored = type(current)(stored)
+        setattr(unit, col, stored)
+
+
 def import_project(conn: sqlite3.Connection, settings: ProjectSettings) -> ImportReport:
     """Read P2's layers and persist them as units and `contains` relationships.
 
@@ -305,6 +348,8 @@ def import_project(conn: sqlite3.Connection, settings: ProjectSettings) -> Impor
             report.units.append(u)
 
     for u in report.units:
+        # A unit whose id was reused already exists; keep what this import cannot know.
+        _carry_forward(conn, u)
         save_unit(conn, u)
     for r in report.relationships:
         save_relationship(conn, r)

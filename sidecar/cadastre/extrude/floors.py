@@ -25,6 +25,24 @@ from ..models import CreatedBy, ProjectSettings, Representation, Status, Unit, U
 #: Attributes a child unit inherits from its parent: lineage, never measurements.
 INHERITED = frozenset({"parent_ulpin_14"})
 
+#: Namespace for deriving a floor's id from its building and its index.
+#:
+#: A floor used to get a fresh uuid4 on every call, so a second `derive` over the same
+#: building produced a second complete stack rather than the same one: 5,003 floors
+#: became 10,006, each new one carrying its own provisional ULPIN. Nothing reported it -
+#: the counts in the report were the counts of what had just been created, which is a
+#: true statement about the run and a false one about the project.
+#:
+#: A floor's identity is "the nth level of this building". Deriving the id from exactly
+#: that makes re-deriving an update, and keeps the identifier stable across runs, which
+#: is what a permanent `unit_id` is for.
+_FLOOR_NS = uuid.UUID("6f9d1c02-4a3e-5b77-9c21-8f4e2d0a7b31")
+
+
+def floor_unit_id(building_id: str, index: int) -> str:
+    """The permanent id of the floor at `index` in `building_id`. Same input, same id."""
+    return str(uuid.uuid5(_FLOOR_NS, f"{building_id}/floor/{index}"))
+
 
 class NotExtrudable(ValueError):
     """The building has no usable height range, so floors cannot be derived."""
@@ -55,7 +73,7 @@ def split(building: Unit, floor_count: int, settings: ProjectSettings,
         index = i - basement_count                      # basements are negative
         lower = building.lower_limit + i * height
         floors.append(Unit(
-            unit_id=str(uuid.uuid4()),
+            unit_id=floor_unit_id(building.unit_id, index),
             unit_type=UnitType.FLOOR,
             status=Status.NEEDS_REVIEW,
             crs=building.crs,

@@ -256,3 +256,47 @@ def test_a_storey_above_the_format_ceiling_is_left_unidentified(project):
     unnamed = [store.get_unit(project, row["unit_id"]) for row in project.execute(
         "SELECT unit_id FROM unit WHERE unit_type='floor' AND ulpin_provisional IS NULL")]
     assert [u.attributes["floor_index"] for u in unnamed] == [100]
+
+
+# --- deriving twice is not deriving twice as much -------------------------------------
+
+def test_re_deriving_a_building_updates_its_floors_rather_than_adding_a_second_stack(project):
+    """The floor stack is replaced in place, not appended to.
+
+    `test_a_floor_identifier_is_allocated_once_and_survives_a_second_derive` above never
+    exercised this: the second run finds no building with a NULL height and does nothing
+    at all, so it asserts that a no-op changes nothing. The path that matters is a
+    building whose heights are gone and are derived again - which is what happened in
+    practice when registering a DEM re-ingested the footprint layer and nulled them.
+    Floors took a fresh uuid4 per call, so the project went from 5,003 floors to 10,006
+    while the report said `floors_created: 5003` both times.
+    """
+    derive.derive_heights(project, default_floor_count=7)
+    first = {row["unit_id"] for row in project.execute(
+        "SELECT unit_id FROM unit WHERE unit_type='floor'")}
+    assert len(first) == 7
+
+    # Exactly what a re-ingest does to a building: the source has no elevation in it.
+    project.execute("UPDATE unit SET lower_limit=NULL, upper_limit=NULL "
+                    "WHERE unit_type='building'")
+    project.commit()
+
+    report = derive.derive_heights(project, default_floor_count=7)
+    assert report.floors_created == 7
+
+    second = {row["unit_id"] for row in project.execute(
+        "SELECT unit_id FROM unit WHERE unit_type='floor'")}
+    assert second == first, "the same seven floors, not seven more"
+
+
+def test_two_buildings_do_not_share_floor_ids(project):
+    """Determinism must not collapse two buildings' ground floors into one unit."""
+    from cadastre.extrude import floors as flr
+
+    derive.derive_heights(project, default_floor_count=3)
+    a = store.get_unit(project, "BLD-1")
+    b = store.get_unit(project, "BLD-1")
+    b.unit_id = "a-different-building"
+    _units, _rels, _sources, settings = store.load_project(project)
+    assert not ({f.unit_id for f in flr.split(a, 3, settings)}
+                & {f.unit_id for f in flr.split(b, 3, settings)})
