@@ -14,7 +14,8 @@ import { fromP4Document } from '../../../viewer/src/lib/adapter';
 function useProjectGeometry() {
   const { doc } = useCadastreDocument();
   return useMemo(() => {
-    if (!doc) return { parcels: [], buildings: [], bounds: null };
+    if (!doc) return { parcels: [], buildings: [], bounds: null, sceneUnits: [],
+                       projectExtent: null, withHeights: 0 };
 
     const units = fromP4Document(doc);
     // Leaflet wants [lat, lng]; the adapter returns GeoJSON order.
@@ -32,10 +33,48 @@ function useProjectGeometry() {
           : [[lat, lon], [lat, lon]];
       }
     }
+    // The 3D scene works in the project CRS directly: it is already metres, so a box
+    // drawn from these numbers is the real size of the thing. Reprojecting to degrees
+    // and back would only lose precision on the way.
+    const raw = doc.units ?? [];
+    // `contains` gives each floor its building, so selecting one can open its stack.
+    const parentOf = new Map();
+    for (const r of doc.relationships ?? []) {
+      if (r.rel_type === 'contains') parentOf.set(r.to_unit_id, r.from_unit_id);
+    }
+    const sceneUnits = raw.map((u) => ({
+      unit_id: u.unit_id,
+      unit_type: u.unit_type,
+      label: u.ulpin ?? u.ulpin_provisional ?? u.unit_id,
+      lower_limit: u.lower_limit,
+      upper_limit: u.upper_limit,
+      ringMetres: u.footprint_2d?.coordinates?.[0] ?? [],
+      parent_unit_id: parentOf.get(u.unit_id) ?? null,
+    })).filter((u) => u.ringMetres.length);
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    let groundZ = Infinity;
+    for (const u of sceneUnits) {
+      for (const [x, y] of u.ringMetres) {
+        if (x < minX) minX = x; if (x > maxX) maxX = x;
+        if (y < minY) minY = y; if (y > maxY) maxY = y;
+      }
+      if (u.unit_type !== 'land_parcel' && u.lower_limit != null && u.lower_limit < groundZ) {
+        groundZ = u.lower_limit;
+      }
+    }
+    const projectExtent = Number.isFinite(minX)
+      ? { minX, minY, maxX, maxY, groundZ: Number.isFinite(groundZ) ? groundZ : 0 }
+      : null;
+
     return {
       parcels: parcels.map((u) => ({ unit: u, positions: latlng(u) })),
       buildings: buildings.map((u) => ({ unit: u, positions: latlng(u) })),
       bounds,
+      sceneUnits,
+      projectExtent,
+      withHeights: sceneUnits.filter(
+        (u) => u.unit_type !== 'land_parcel' && u.lower_limit != null).length,
     };
   }, [doc]);
 }
@@ -253,220 +292,211 @@ function PropertyPanel({ property, onClose }) {
 
 /* 3D Scene with Three.js */
 function ThreeScene({ selectedBuilding, onSelectBuilding, activeFloor }) {
+  // Read the project here rather than take it as a prop: this is a sibling of the 2D
+  // map, not a child of it, and the hook is memoised on the document so both views work
+  // from one parse of it.
+  const { sceneUnits, projectExtent, withHeights } = useProjectGeometry();
+
   const canvasRef = useRef(null);
   const rendererRef = useRef(null);
   const sceneRef = useRef(null);
   const cameraRef = useRef(null);
   const animFrameRef = useRef(null);
+  const selectRef = useRef(onSelectBuilding);
+  selectRef.current = onSelectBuilding;
+
+  // Nothing to draw is a state this effect has to handle, not a reason to skip the hook.
+  // The empty-state return used to sit above these declarations, so the first project to
+  // gain heights changed the hook count between renders and React tore the view down.
+  const drawable = Boolean(projectExtent) && withHeights > 0;
 
   useEffect(() => {
-    let THREE;
     let mounted = true;
+    let controls = null;
+    let observer = null;
+    let onClick = null;
 
     async function initScene() {
-      THREE = await import('three');
+      if (!drawable) return;
+      const THREE = await import('three');
+      const { OrbitControls } = await import('three/examples/jsm/controls/OrbitControls.js');
       if (!mounted || !canvasRef.current) return;
 
+      const host = canvasRef.current;
       const scene = new THREE.Scene();
       scene.background = new THREE.Color(0x0a0e1a);
-      scene.fog = new THREE.FogExp2(0x0a0e1a, 0.015);
       sceneRef.current = scene;
 
-      const w = canvasRef.current.clientWidth;
-      const h = canvasRef.current.clientHeight;
-      const camera = new THREE.PerspectiveCamera(50, w / h, 0.1, 500);
-      camera.position.set(25, 20, 25);
-      camera.lookAt(0, 3, 0);
+      const cx = (projectExtent.minX + projectExtent.maxX) / 2;
+      const cz = (projectExtent.minY + projectExtent.maxY) / 2;
+      const groundZ = projectExtent.groundZ;
+      const spanX = projectExtent.maxX - projectExtent.minX;
+      const spanY = projectExtent.maxY - projectExtent.minY;
+      const span = Math.max(spanX, spanY, 20);
+
+      // No fog. Density here is a per-scene constant that silently encodes an assumed
+      // scene size, and this scene's size is whatever the project happens to be. The
+      // original 0.015 was tuned for a hand-built block tens of metres across; over a
+      // 689 m ward it left every building at exp(-(689*0.015)^2) of its colour, which is
+      // zero to about forty decimal places. Scaling it by the span was still wrong - the
+      // camera has to stand further out than the span to frame it, so the far side of a
+      // correctly-scaled scene still sat behind 98% fog. The view was never failing to
+      // draw the buildings; it was drawing them and painting the background over them.
+      // A depth cue is not worth a class of bug that looks exactly like a dead renderer.
+
+      const w = host.clientWidth || 800;
+      const h = host.clientHeight || 600;
+      const camera = new THREE.PerspectiveCamera(50, w / h, 0.5, span * 12);
       cameraRef.current = camera;
 
-      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      const renderer = new THREE.WebGLRenderer({ antialias: true });
       renderer.setSize(w, h);
-      renderer.setPixelRatio(window.devicePixelRatio);
-      renderer.shadowMap.enabled = true;
-      canvasRef.current.appendChild(renderer.domElement);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      host.appendChild(renderer.domElement);
       rendererRef.current = renderer;
 
-      // Lights
-      const ambientLight = new THREE.AmbientLight(0x404060, 0.6);
-      scene.add(ambientLight);
-      const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-      dirLight.position.set(20, 30, 20);
-      dirLight.castShadow = true;
+      const ambient = new THREE.AmbientLight(0x8899bb, 1.1);
+      scene.add(ambient);
+      const dirLight = new THREE.DirectionalLight(0xffffff, 1.4);
+      dirLight.position.set(span * 0.5, span * 0.8, span * 0.4);
       scene.add(dirLight);
-      const pointLight = new THREE.PointLight(0x00d4aa, 0.3, 50);
-      pointLight.position.set(-10, 15, -10);
-      scene.add(pointLight);
+      const fill = new THREE.DirectionalLight(0x00d4aa, 0.35);
+      fill.position.set(-span * 0.4, span * 0.3, -span * 0.5);
+      scene.add(fill);
 
-      // Ground plane
-      const groundGeom = new THREE.PlaneGeometry(60, 60);
-      const groundMat = new THREE.MeshStandardMaterial({
-        color: 0x111827, roughness: 0.9, metalness: 0.1
-      });
-      const ground = new THREE.Mesh(groundGeom, groundMat);
+      const groundSpan = span * 1.6;
+      const ground = new THREE.Mesh(
+        new THREE.PlaneGeometry(groundSpan, groundSpan),
+        new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.95 }));
       ground.rotation.x = -Math.PI / 2;
-      ground.receiveShadow = true;
       scene.add(ground);
+      const grid = new THREE.GridHelper(groundSpan, 48, 0x1e293b, 0x161d2d);
+      grid.position.y = 0.02;
+      scene.add(grid);
 
-      // Grid
-      const gridHelper = new THREE.GridHelper(60, 60, 0x1e293b, 0x1a2035);
-      gridHelper.position.y = 0.01;
-      scene.add(gridHelper);
+      const TYPE_COLOR = {
+        land_parcel: 0x00d4aa,
+        building: 0x0ea5e9,
+        floor: 0x8b5cf6,
+        apartment: 0xf59e0b,
+        underground_feature: 0xf59e0b,
+        elevated_structure: 0x38bdf8,
+      };
 
-      // Parcel boundaries (green outlines on ground)
-      const parcelPositions = [
-        { x: -8, z: -5, w: 8, d: 8 },
-        { x: 2, z: -3, w: 10, d: 10 },
-        { x: 14, z: -6, w: 6, d: 7 },
-      ];
-      parcelPositions.forEach(p => {
-        const shape = new THREE.Shape();
-        shape.moveTo(p.x, p.z);
-        shape.lineTo(p.x + p.w, p.z);
-        shape.lineTo(p.x + p.w, p.z + p.d);
-        shape.lineTo(p.x, p.z + p.d);
-        shape.lineTo(p.x, p.z);
-        const points = shape.getPoints();
-        const geom = new THREE.BufferGeometry().setFromPoints(
-          points.map(pt => new THREE.Vector3(pt.x, 0.05, pt.y))
-        );
-        const mat = new THREE.LineBasicMaterial({ color: 0x00d4aa, opacity: 0.4, transparent: true });
-        const line = new THREE.Line(geom, mat);
-        scene.add(line);
-
-        // Parcel labels
-        const labelPos = new THREE.Vector3(p.x + p.w / 2, 0.1, p.z + p.d / 2);
-        const labelId = `P${183 + parcelPositions.indexOf(p)}`;
-        // We'll skip canvas labels for simplicity - the buildings serve as indicators
-      });
-
-      // Buildings
-      const buildingData = [
-        { id: 'B318', x: -5, z: -2, w: 4, d: 3.5, floors: 8, basement: 1, color: 0x00d4aa },
-        { id: 'B320', x: 4, z: 0, w: 5.5, d: 4, floors: 5, basement: 2, color: 0x0ea5e9 },
-        { id: 'B315', x: 15, z: -3, w: 3, d: 3, floors: 6, basement: 1, color: 0x8b5cf6 },
-      ];
-
-      const floorHeight = 3;
-
-      buildingData.forEach(bd => {
-        // Basement floors
-        for (let b = 0; b < bd.basement; b++) {
-          const y = -(b + 1) * floorHeight;
-          const geom = new THREE.BoxGeometry(bd.w, floorHeight - 0.15, bd.d);
-          const mat = new THREE.MeshStandardMaterial({
-            color: 0xf59e0b, opacity: 0.3, transparent: true, roughness: 0.7
-          });
-          const mesh = new THREE.Mesh(geom, mat);
-          mesh.position.set(bd.x, y + floorHeight / 2, bd.z);
-          mesh.castShadow = true;
-          mesh.userData = { buildingId: bd.id, floor: -(b + 1), type: 'basement' };
-          scene.add(mesh);
-
-          // wireframe
-          const wireGeo = new THREE.EdgesGeometry(geom);
-          const wireMat = new THREE.LineBasicMaterial({ color: 0xf59e0b, opacity: 0.5, transparent: true });
-          const wire = new THREE.LineSegments(wireGeo, wireMat);
-          wire.position.copy(mesh.position);
-          scene.add(wire);
-        }
-
-        // Above-ground floors
-        for (let f = 0; f < bd.floors; f++) {
-          const y = f * floorHeight;
-          const isSelected = selectedBuilding === bd.id;
-          const isActiveFloor = isSelected && activeFloor === f + 1;
-
-          const geom = new THREE.BoxGeometry(bd.w, floorHeight - 0.15, bd.d);
-          const opacity = isSelected ? (isActiveFloor ? 0.9 : 0.5) : 0.6;
-          const color = isActiveFloor ? 0x00ff88 : bd.color;
-
-          const mat = new THREE.MeshStandardMaterial({
-            color, opacity, transparent: true, roughness: 0.5, metalness: 0.1
-          });
-          const mesh = new THREE.Mesh(geom, mat);
-          mesh.position.set(bd.x, y + floorHeight / 2, bd.z);
-          mesh.castShadow = true;
-          mesh.userData = { buildingId: bd.id, floor: f + 1 };
-          scene.add(mesh);
-
-          // wireframe
-          const wireGeo = new THREE.EdgesGeometry(geom);
-          const wireMat = new THREE.LineBasicMaterial({
-            color: isActiveFloor ? 0x00ff88 : bd.color,
-            opacity: isActiveFloor ? 1 : 0.4, transparent: true
-          });
-          const wire = new THREE.LineSegments(wireGeo, wireMat);
-          wire.position.copy(mesh.position);
-          scene.add(wire);
-        }
-
-        // Building ID label using a thin bar on top
-        const topY = bd.floors * floorHeight;
-        const labelGeo = new THREE.BoxGeometry(bd.w, 0.08, bd.d);
-        const labelMat = new THREE.MeshStandardMaterial({ color: bd.color, emissive: bd.color, emissiveIntensity: 0.3 });
-        const labelMesh = new THREE.Mesh(labelGeo, labelMat);
-        labelMesh.position.set(bd.x, topY + 0.1, bd.z);
-        scene.add(labelMesh);
-      });
-
-      // Underground pipes
-      const pipeGeo = new THREE.CylinderGeometry(0.15, 0.15, 30, 8);
-      const pipeMat = new THREE.MeshStandardMaterial({ color: 0xf59e0b, opacity: 0.35, transparent: true });
-      const pipe = new THREE.Mesh(pipeGeo, pipeMat);
-      pipe.rotation.z = Math.PI / 2;
-      pipe.position.set(0, -2, 5);
-      scene.add(pipe);
-
-      const pipe2Geo = new THREE.CylinderGeometry(0.12, 0.12, 20, 8);
-      const pipe2 = new THREE.Mesh(pipe2Geo, pipeMat.clone());
-      pipe2.rotation.x = Math.PI / 2;
-      pipe2.position.set(-5, -3, 0);
-      scene.add(pipe2);
-
-      // Elevated road
-      const roadGeo = new THREE.BoxGeometry(35, 0.3, 2);
-      const roadMat = new THREE.MeshStandardMaterial({ color: 0x3b82f6, opacity: 0.25, transparent: true });
-      const road = new THREE.Mesh(roadGeo, roadMat);
-      road.position.set(0, 12, -10);
-      scene.add(road);
-      // Road supports
-      for (let i = -15; i <= 15; i += 6) {
-        const pillarGeo = new THREE.BoxGeometry(0.3, 12, 0.3);
-        const pillar = new THREE.Mesh(pillarGeo, roadMat.clone());
-        pillar.position.set(i, 6, -10);
-        scene.add(pillar);
+      // Parcels as outlines on the ground, so a building always sits inside something.
+      for (const u of sceneUnits.filter((x) => x.unit_type === 'land_parcel')) {
+        const pts = u.ringMetres.map(([x, y]) => new THREE.Vector3(x - cx, 0.06, -(y - cz)));
+        scene.add(new THREE.Line(
+          new THREE.BufferGeometry().setFromPoints(pts),
+          new THREE.LineBasicMaterial({ color: TYPE_COLOR.land_parcel, opacity: 0.5,
+                                        transparent: true })));
       }
 
-      // Camera auto-rotation
-      let angle = Math.PI / 4;
-      const rotateSpeed = 0.002;
-      const radius = 35;
+      // Every unit with a vertical extent becomes the prism it actually is: its own
+      // footprint, extruded between its own limits. A unit whose heights are unknown is
+      // not drawn at all rather than given an invented one.
+      //
+      // Buildings always; floors only for the one selected. A ward of 910 buildings is
+      // 5,000 floors, and drawing them all is ~12,000 meshes - the scene stops being
+      // navigable, and a solid block of overlapping translucent boxes shows less than
+      // the envelopes do. Click a building to open its stack.
+      const withHeight = (u) => u.lower_limit != null && u.upper_limit != null;
+      const solid = sceneUnits.filter((u) => {
+        if (u.unit_type === 'land_parcel' || !withHeight(u)) return false;
+        if (u.unit_type === 'floor' || u.unit_type === 'apartment') {
+          return u.parent_unit_id === selectedBuilding;
+        }
+        return true;
+      });
+
+      const pickable = [];
+      for (const u of solid) {
+        const shape = new THREE.Shape();
+        u.ringMetres.forEach(([x, y], i) => {
+          const px = x - cx, pz = -(y - cz);
+          if (i === 0) shape.moveTo(px, pz); else shape.lineTo(px, pz);
+        });
+        const height = Math.max(u.upper_limit - u.lower_limit, 0.05);
+        const geom = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false });
+        geom.rotateX(-Math.PI / 2);
+
+        const selected = selectedBuilding === u.unit_id || activeFloor === u.unit_id;
+        const isFloor = u.unit_type === 'floor' || u.unit_type === 'apartment';
+        const color = selected ? 0x00ff88 : (TYPE_COLOR[u.unit_type] ?? 0x64748b);
+        // Buildings are opaque. Nine hundred translucent boxes stacked front-to-back
+        // average out to one flat wash of colour, and depth is the whole point here.
+        const mesh = new THREE.Mesh(geom, new THREE.MeshStandardMaterial({
+          color, roughness: 0.55, metalness: 0.05,
+          transparent: isFloor, opacity: isFloor ? 0.35 : 1,
+          emissive: color, emissiveIntensity: selected ? 0.45 : 0.06,
+        }));
+        mesh.position.y = u.lower_limit - groundZ;
+        mesh.userData = { unitId: u.unit_id, label: u.label, type: u.unit_type,
+                          buildingId: u.unit_type === 'building' ? u.unit_id : u.parent_unit_id };
+        scene.add(mesh);
+        if (u.unit_type === 'building') pickable.push(mesh);
+
+        const edges = new THREE.LineSegments(
+          new THREE.EdgesGeometry(geom),
+          new THREE.LineBasicMaterial({ color: selected ? 0x00ff88 : 0x1b3a52,
+                                        opacity: 0.5, transparent: true }));
+        edges.position.y = mesh.position.y;
+        scene.add(edges);
+      }
+
+      // Frame the project by fitting its bounding sphere to the field of view, rather
+      // than guessing a multiple of its width. At 689 m across, the old radius put the
+      // camera 620 m out and pointed it at a spot five metres above the origin.
+      const radius = Math.hypot(spanX, spanY) / 2;
+      const dist = (radius / Math.sin((camera.fov * Math.PI / 180) / 2)) * 0.62;
+      camera.position.set(dist * 0.7, dist * 0.6, dist * 0.7);
+
+      controls = new OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.08;
+      controls.target.set(0, 0, 0);
+      controls.maxPolarAngle = Math.PI / 2.05;   // never go below the ground plane
+      controls.minDistance = 15;
+      controls.maxDistance = span * 4;
+      controls.update();
+
+      // The HUD has said "Mode: Orbit" since the first mock. Nothing orbited on demand:
+      // the camera flew a fixed circle and ignored the mouse entirely, so a click on a
+      // building did nothing and its floor stack could never be opened.
+      const raycaster = new THREE.Raycaster();
+      const pointer = new THREE.Vector2();
+      let downAt = null;
+      const onDown = (e) => { downAt = [e.clientX, e.clientY]; };
+      onClick = (e) => {
+        // An orbit drag ends in a click event too; only treat a stationary press as a pick.
+        if (!downAt || Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 4) return;
+        const rect = renderer.domElement.getBoundingClientRect();
+        pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+        raycaster.setFromCamera(pointer, camera);
+        const hit = raycaster.intersectObjects(pickable, false)[0];
+        if (hit) selectRef.current?.(hit.object.userData.unitId);
+      };
+      renderer.domElement.addEventListener('pointerdown', onDown);
+      renderer.domElement.addEventListener('click', onClick);
 
       function animate() {
         animFrameRef.current = requestAnimationFrame(animate);
-        angle += rotateSpeed;
-        camera.position.x = Math.cos(angle) * radius;
-        camera.position.z = Math.sin(angle) * radius;
-        camera.position.y = 20;
-        camera.lookAt(0, 5, 0);
+        controls.update();
         renderer.render(scene, camera);
       }
       animate();
 
-      // Handle resize
-      const handleResize = () => {
-        if (!canvasRef.current) return;
-        const w = canvasRef.current.clientWidth;
-        const h = canvasRef.current.clientHeight;
-        camera.aspect = w / h;
+      // The window never resizes when the Layers panel slides in, but the canvas does.
+      // Watching the element rather than the window keeps the aspect honest either way.
+      observer = new ResizeObserver(() => {
+        const cw = host.clientWidth, ch = host.clientHeight;
+        if (!cw || !ch) return;
+        camera.aspect = cw / ch;
         camera.updateProjectionMatrix();
-        renderer.setSize(w, h);
-      };
-      window.addEventListener('resize', handleResize);
-
-      return () => {
-        window.removeEventListener('resize', handleResize);
-      };
+        renderer.setSize(cw, ch);
+      });
+      observer.observe(host);
     }
 
     initScene();
@@ -474,39 +504,60 @@ function ThreeScene({ selectedBuilding, onSelectBuilding, activeFloor }) {
     return () => {
       mounted = false;
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
-      if (rendererRef.current) {
-        rendererRef.current.dispose();
-        if (canvasRef.current && rendererRef.current.domElement.parentNode === canvasRef.current) {
-          canvasRef.current.removeChild(rendererRef.current.domElement);
+      observer?.disconnect();
+      controls?.dispose();
+      const r = rendererRef.current;
+      if (r) {
+        if (onClick) r.domElement.removeEventListener('click', onClick);
+        r.dispose();
+        if (canvasRef.current && r.domElement.parentNode === canvasRef.current) {
+          canvasRef.current.removeChild(r.domElement);
         }
+        rendererRef.current = null;
       }
     };
-  }, [selectedBuilding, activeFloor]);
+  }, [selectedBuilding, activeFloor, sceneUnits, projectExtent, drawable]);
+
+  // A 3D view of units that have no third dimension is an empty grid, and an empty grid
+  // is indistinguishable from a broken renderer. Say which it is. The heights are
+  // genuinely absent - FR-03 forbids inventing them - so this is the honest state, not
+  // an error, and it names the step that fills them in.
+  if (projectExtent && withHeights === 0) {
+    return (
+      <div className="scene-empty">
+        <div className="scene-empty-title">No heights to draw yet</div>
+        <div className="scene-empty-body">
+          This project has {sceneUnits.filter((u) => u.unit_type === 'building').length} buildings
+          and no elevation, so nothing has a vertical extent. That is the system refusing
+          to invent one, not a failure to render.
+          <br /><br />
+          Add a DEM and a DSM on the Upload Data screen, then run Floor segmentation under
+          AI Tools: the buildings get a height range and a floor stack, and this view fills in.
+        </div>
+      </div>
+    );
+  }
 
   return <div ref={canvasRef} className="three-canvas-wrapper" />;
 }
 
 /* Floor slider for 3D view */
-function FloorSlider({ building, activeFloor, onFloorChange }) {
-  if (!building) return null;
-  const floors = [];
-  if (building.basement) {
-    for (let b = building.basement; b >= 1; b--) floors.push({ label: `B${b}`, value: -b });
-  }
-  for (let f = 1; f <= building.floors; f++) {
-    floors.push({ label: f === building.floors ? 'Roof' : `${f}F`, value: f });
-  }
-  floors.reverse();
-
+/** Driven by the floors that exist, not by a `floors` count on a mock building record.
+ *  A derived building carries no such field, so the old slider rendered zero buttons for
+ *  every real project - a control that is present, empty and silent. */
+function FloorSlider({ floors, activeFloor, onFloorChange }) {
+  if (!floors.length) return null;
+  const ordered = [...floors].sort((a, b) => (b.lower_limit ?? 0) - (a.lower_limit ?? 0));
   return (
     <div className="floor-slider">
-      {floors.map((f) => (
+      {ordered.map((f, i) => (
         <button
-          key={f.value}
-          className={`floor-btn${activeFloor === f.value ? ' active' : ''}`}
-          onClick={() => onFloorChange(f.value)}
+          key={f.unit_id}
+          className={`floor-btn${activeFloor === f.unit_id ? ' active' : ''}`}
+          title={f.label}
+          onClick={() => onFloorChange(activeFloor === f.unit_id ? null : f.unit_id)}
         >
-          {f.label}
+          {i === 0 ? 'Roof' : `${ordered.length - 1 - i}F`}
         </button>
       ))}
     </div>
@@ -518,8 +569,10 @@ export default function MapPage({ project, view = '2d' }) {
   const [showLayers, setShowLayers] = useState(true);
   const [layers, setLayers] = useState(MAP_LAYERS);
   const [selectedProperty, setSelectedProperty] = useState(null);
-  const [selectedBuildingId, setSelectedBuildingId] = useState('B318');
-  const [activeFloor, setActiveFloor] = useState(4);
+  // 'B318' was a mock identifier from the sample scene. It matched no real unit, so the
+  // HUD reported a selection that did not exist and the floor stack had nothing to open.
+  const [selectedBuildingId, setSelectedBuildingId] = useState(null);
+  const [activeFloor, setActiveFloor] = useState(null);
 
   useEffect(() => {
     const handleToggleLayers = () => setShowLayers(prev => !prev);
@@ -536,14 +589,27 @@ export default function MapPage({ project, view = '2d' }) {
     }));
   };
 
+  const selectBuilding = (unitId) => {
+    setSelectedBuildingId(unitId);
+    setActiveFloor(null);   // the previous building's floor is not this building's floor
+  };
+
   const handleBuildingClick = (building) => {
     setSelectedBuildingId(building.id);
     // Details come from the unit that was actually picked, or the panel stays shut.
     setSelectedProperty(null);
   };
 
-  const { parcels: livePercels, buildings: liveBuildings, bounds } = useProjectGeometry();
+  const { parcels: livePercels, buildings: liveBuildings, bounds,
+          sceneUnits, projectExtent, withHeights } = useProjectGeometry();
   const selectedBuildingData = liveBuildings.find(b => b.unit.unit_id === selectedBuildingId)?.unit;
+  // What the HUD reports has to come from the scene, not from a remembered string.
+  const sceneBuildingCount = sceneUnits.filter((u) => u.unit_type === 'building').length;
+  const selectedBuildingLabel = sceneUnits.find((u) => u.unit_id === selectedBuildingId)?.label
+    ?? selectedBuildingId;
+  const selectedFloors = sceneUnits.filter(
+    (u) => u.parent_unit_id === selectedBuildingId && u.unit_type === 'floor');
+  const selectedFloorCount = selectedFloors.length;
 
   return (
     <>
@@ -654,18 +720,20 @@ export default function MapPage({ project, view = '2d' }) {
             <>
               <ThreeScene
                 selectedBuilding={selectedBuildingId}
-                onSelectBuilding={setSelectedBuildingId}
+                onSelectBuilding={selectBuilding}
                 activeFloor={activeFloor}
               />
               <FloorSlider
-                building={selectedBuildingData}
+                floors={selectedFloors}
                 activeFloor={activeFloor}
                 onFloorChange={setActiveFloor}
               />
               <div className="map-info-overlay">
-                <span>Building: {selectedBuildingId}</span>
-                <span>Floor: {activeFloor}</span>
-                <span>Mode: Orbit</span>
+                <span>{selectedBuildingId
+                  ? `Building: ${selectedBuildingLabel}`
+                  : `${sceneBuildingCount} buildings \u00b7 click one to open its floors`}</span>
+                {selectedBuildingId && <span>Floors: {selectedFloorCount}</span>}
+                <span>Drag to orbit · scroll to zoom</span>
               </div>
             </>
           )}
