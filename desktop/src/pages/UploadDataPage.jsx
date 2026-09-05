@@ -1,135 +1,227 @@
 import { useState } from 'react';
+import { open } from '@tauri-apps/plugin-dialog';
 import { Icons } from '../components/Icons';
+import { cadastre, SidecarUnavailable } from '../data/cadastreApi';
+import { useCadastreDocument, NothingYet } from '../data/useCadastre';
 
-const fileTypes = [
-  { ext: 'GeoJSON', desc: 'Land parcel maps', icon: '📐' },
-  { ext: 'Shapefile', desc: 'Building footprints', icon: '🏗️' },
-  { ext: 'PDF/DXF', desc: 'Floor plans', icon: '📄' },
-  { ext: 'JPEG/PNG', desc: 'Drone images', icon: '🛸' },
-  { ext: 'LAS/LAZ', desc: 'LiDAR point clouds', icon: '📡' },
-  { ext: 'GeoTIFF', desc: 'DEM/DSM elevation', icon: '🏔️' },
+// The same nine kinds the creation wizard offers, because a project does not care
+// whether a file arrived at the start or an hour later. The type is chosen here rather
+// than guessed from the extension: .geojson is a parcel layer or a footprint layer
+// depending only on what is in it, and guessing wrong puts 910 buildings into the
+// register as parcels.
+const SOURCE_KINDS = [
+  { id: 'parcel_map', label: 'GIS parcel layer', hint: 'Cadastral polygons. Carries the 14-character ULPIN every unit inherits.', h: 0.3, v: 0.5 },
+  { id: 'footprint', label: 'Building footprints', hint: 'Building outlines, attached to the parcel holding most of each one.', h: 2.0, v: 5.0 },
+  { id: 'utility', label: 'Utility lines', hint: 'Becomes an easement corridor, which may cross parcel boundaries.', h: 1.0, v: 1.0 },
+  { id: 'dem', label: 'DEM — bare earth', hint: 'Ground level. Without it heights stay absent.', h: 0.2, v: 0.1 },
+  { id: 'dsm', label: 'DSM — surface', hint: 'Roof level. Paired with the DEM to extrude buildings.', h: 0.2, v: 0.1 },
+  { id: 'ortho', label: 'Drone imagery', hint: 'Basemap and visual evidence for review.', h: 0.2, v: 1.0 },
+  { id: 'pointcloud', label: 'LiDAR point cloud', hint: 'Registered as provenance; the DEM and DSM derived from it are what get read.', h: 0.1, v: 0.1 },
+  { id: 'floorplan', label: 'Building floor plan', hint: 'Interior subdivision. Uses a local datum: ground floor is 0.000.', h: 0.05, v: 0.05 },
+  { id: 'control', label: 'GNSS / CORS control', hint: 'The points everything else is tied to.', h: 0.02, v: 0.03 },
 ];
 
-// Files arrive through the project wizard, which registers each one with its
-// provider, capture date and accuracy. Four fabricated uploads sat here, each
-// carrying validation results — ticks and crosses against checks that had never
-// been run on files that were never there.
+const today = () => new Date().toISOString().slice(0, 10);
 
 export default function UploadDataPage() {
-  const [files, setFiles] = useState([]);
-  const [dragOver, setDragOver] = useState(false);
+  const { doc, live, reload } = useCadastreDocument();
+  const [queued, setQueued] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState(null);
 
-  const totalErrors = files.reduce((sum, f) => sum + f.errors, 0);
-  const totalWarnings = files.reduce((sum, f) => sum + f.warnings, 0);
-  const allComplete = files.filter(f => f.status === 'complete').length;
+  const projectCrs = doc?.project?.project_crs ?? 'EPSG:32643';
+  const projectDatum = doc?.project?.vertical_datum ?? 'EGM2008';
+
+  async function pick(kind) {
+    setError(null);
+    let paths;
+    try {
+      paths = await open({ multiple: true });
+    } catch {
+      // Outside the desktop shell there is no file dialog. Say that, rather than
+      // letting the click do nothing.
+      setError('Choosing a file needs the desktop shell. Run the app with `tauri dev`.');
+      return;
+    }
+    if (!paths) return;
+    const list = Array.isArray(paths) ? paths : [paths];
+    setQueued(q => [
+      ...q,
+      ...list.map(path => ({
+        path,
+        name: path.split('/').pop(),
+        source_type: kind.id,
+        provider: '',
+        capture_date: today(),
+        crs: kind.id === 'dem' || kind.id === 'dsm' ? projectCrs : 'EPSG:4326',
+        vertical_datum: projectDatum,
+        horizontal_accuracy_m: kind.h,
+        vertical_accuracy_m: kind.v,
+      })),
+    ]);
+  }
+
+  function edit(i, field, value) {
+    setQueued(q => q.map((s, n) => (n === i ? { ...s, [field]: value } : s)));
+  }
+
+  async function process() {
+    setBusy(true);
+    setError(null);
+    setResult(null);
+    try {
+      const r = await cadastre.addSources(queued.map(s => ({
+        ...s,
+        horizontal_accuracy_m: Number(s.horizontal_accuracy_m),
+        vertical_accuracy_m: Number(s.vertical_accuracy_m),
+      })));
+      setResult(r);
+      setQueued([]);
+      await reload();
+    } catch (e) {
+      setError(e instanceof SidecarUnavailable
+        ? 'The cadastre sidecar is not running, so nothing was added.'
+        : e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
-    <div className="upload-page">
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+    <div className="page">
+      <div className="page-header">
         <div>
-          <h2 style={{ fontSize: 'var(--text-xl)', fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>Upload Data</h2>
-          <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>Upload source data for processing and 3D unit creation</p>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <span className="status-badge approved">{allComplete} Uploaded</span>
-          {totalErrors > 0 && <span className="status-badge error-badge">{totalErrors} Errors</span>}
-          {totalWarnings > 0 && <span className="status-badge warning-badge">{totalWarnings} Warnings</span>}
+          <h1 className="page-title">Upload Data</h1>
+          <p className="page-subtitle">
+            Add sources to this project. Every file records its own accuracy, and every
+            comparison tolerance is derived from it — under-stating accuracy is safe,
+            over-stating it reports measurement noise as encroachment.
+          </p>
         </div>
       </div>
 
-      {/* Supported formats */}
-      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-        {fileTypes.map(ft => (
-          <div key={ft.ext} style={{
-            padding: '8px 16px', background: 'var(--bg-tertiary)', border: '1px solid var(--border-primary)',
-            borderRadius: 'var(--radius-md)', display: 'flex', alignItems: 'center', gap: 8, fontSize: 'var(--text-xs)'
-          }}>
-            <span style={{ fontSize: 16 }}>{ft.icon}</span>
-            <div>
-              <div style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{ft.ext}</div>
-              <div style={{ color: 'var(--text-muted)' }}>{ft.desc}</div>
+      {!live && (
+        <NothingYet title="Not connected to the project">
+          The sidecar is not answering, so there is nowhere to put a file.
+        </NothingYet>
+      )}
+
+      <div className="ai-tool-grid" style={{ marginBottom: 24 }}>
+        {SOURCE_KINDS.map(kind => (
+          <button key={kind.id} className="ai-tool-card" onClick={() => pick(kind)}
+                  disabled={!live} style={{ textAlign: 'left', cursor: live ? 'pointer' : 'not-allowed' }}>
+            <div className="ai-tool-name">{kind.label}</div>
+            <div className="ai-tool-desc">{kind.hint}</div>
+            {/* Nine identically-styled panels of explanatory text read as documentation.
+                Without something that looks like an action, the screen never says that
+                a card is the thing you click - which is how a file that had a card
+                waiting for it looked like a file with nowhere to go. */}
+            <div className="source-card-action">
+              {live ? 'Choose file…' : 'Not connected'}
             </div>
-          </div>
+          </button>
         ))}
       </div>
 
-      {/* Dropzone */}
-      <div
-        className={`upload-dropzone${dragOver ? ' drag-over' : ''}`}
-        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={(e) => { e.preventDefault(); setDragOver(false); }}
-      >
-        <div className="upload-dropzone-icon">
-          <Icons.Upload style={{ width: 28, height: 28 }} />
+      {error && (
+        <div className="page-boundary" style={{ margin: '0 0 20px' }}>
+          <div className="page-boundary-message">{error}</div>
         </div>
-        <div className="upload-dropzone-title">Drop files here or click to browse</div>
-        <div className="upload-dropzone-subtitle">
-          Supports GeoJSON, Shapefile, GeoTIFF, LAS/LAZ, DXF, PDF, JPEG/PNG
-        </div>
-        <button className="btn btn-primary" style={{ marginTop: 8 }} disabled title="Not built yet">
-          <Icons.Upload style={{ width: 14, height: 14 }} />
-          Browse Files
-        </button>
-      </div>
+      )}
 
-      {/* Uploaded Files */}
-      <div>
-        <h3 style={{ fontSize: 'var(--text-md)', fontWeight: 600, color: 'var(--text-primary)', marginBottom: 12 }}>
-          Uploaded Files ({files.length})
-        </h3>
-        <div className="upload-file-list">
-          {files.map((file, i) => (
-            <div className="upload-file-item" key={i}>
-              <div className="upload-file-icon">
-                <Icons.File style={{ width: 18, height: 18 }} />
+      {result && (
+        <div className="card" style={{ marginBottom: 20 }}>
+          <div className="card-header"><div className="card-title">Added</div></div>
+          <div className="card-body" style={{ fontSize: 13, lineHeight: 1.8 }}>
+            {result.layers?.length ? <div>layers written: {result.layers.join(', ')}</div> : null}
+            {result.rasters?.length ? <div>rasters registered: {result.rasters.length}</div> : null}
+            {'created' in result && (
+              <div>
+                {result.created} new unit(s), {result.reused} already present and kept —
+                the identifiers already issued against them are untouched.
               </div>
-              <div className="upload-file-info" style={{ flex: 1 }}>
-                <div className="upload-file-name">{file.name}</div>
-                <div className="upload-file-size">{file.size} · {file.type}</div>
-                {file.status === 'processing' && (
-                  <div className="upload-progress" style={{ marginTop: 6 }}>
-                    <div className="upload-progress-bar" style={{ width: `${file.progress}%` }} />
-                  </div>
-                )}
+            )}
+            {result.unresolved_buildings?.length ? (
+              <div style={{ color: 'var(--warning, #f59e0b)' }}>
+                {result.unresolved_buildings.length} building(s) sit inside no parcel and
+                were left unattached rather than guessed at.
               </div>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0 }}>
-                {/* Validation checks */}
-                {file.validation && Object.entries(file.validation).map(([key, val]) => (
-                  <div key={key} title={key} style={{
-                    width: 18, height: 18, borderRadius: '50%', fontSize: 9, fontWeight: 700,
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    background: val === true ? 'var(--status-success-bg)' : val === false ? 'var(--status-error-bg)' : 'var(--bg-surface)',
-                    color: val === true ? 'var(--status-success)' : val === false ? 'var(--status-error)' : 'var(--text-muted)',
-                  }}>
-                    {val === true ? '✓' : val === false ? '✗' : '…'}
-                  </div>
-                ))}
-              </div>
-              <span className={`status-badge ${file.status === 'complete' ? (file.errors > 0 ? 'error-badge' : 'completed') : 'processing'}`}>
-                {file.status === 'complete' ? (file.errors > 0 ? `${file.errors} errors` : 'Ready') : `${file.progress}%`}
-              </span>
+            ) : null}
+          </div>
+        </div>
+      )}
+
+      <div className="card">
+        <div className="card-header">
+          <div className="card-title">Queued ({queued.length})</div>
+          <button className="btn btn-primary btn-sm"
+                  disabled={!live || busy || !queued.length}
+                  onClick={process}>
+            {busy ? 'Adding…' : `Add ${queued.length} to project`}
+          </button>
+        </div>
+        <div className="card-body">
+          {!queued.length ? (
+            <NothingYet title="Nothing queued">
+              Pick a source type above. The type is chosen, never guessed from the file
+              extension — a .geojson is a parcel layer or a footprint layer depending
+              only on what is inside it.
+            </NothingYet>
+          ) : (
+            <div className="scroll">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>File</th><th>Type</th><th>Provider</th><th>Source CRS</th>
+                    <th>H&plusmn; (m)</th><th>V&plusmn; (m)</th><th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {queued.map((s, i) => (
+                    <tr key={s.path + i}>
+                      <td title={s.path}>{s.name}</td>
+                      <td>
+                        <select className="form-input" value={s.source_type}
+                                onWheel={(e) => e.currentTarget.blur()}
+                                onChange={(e) => edit(i, 'source_type', e.target.value)}>
+                          {SOURCE_KINDS.map(k => (
+                            <option key={k.id} value={k.id}>{k.label}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td>
+                        <input className="form-input" value={s.provider}
+                               placeholder="who produced it"
+                               onChange={(e) => edit(i, 'provider', e.target.value)} />
+                      </td>
+                      <td>
+                        <input className="form-input" value={s.crs}
+                               onChange={(e) => edit(i, 'crs', e.target.value)} />
+                      </td>
+                      <td>
+                        <input className="form-input" type="number" step="0.01"
+                               value={s.horizontal_accuracy_m}
+                               onChange={(e) => edit(i, 'horizontal_accuracy_m', e.target.value)} />
+                      </td>
+                      <td>
+                        <input className="form-input" type="number" step="0.01"
+                               value={s.vertical_accuracy_m}
+                               onChange={(e) => edit(i, 'vertical_accuracy_m', e.target.value)} />
+                      </td>
+                      <td>
+                        <button className="btn btn-ghost btn-sm"
+                                onClick={() => setQueued(q => q.filter((_, n) => n !== i))}>
+                          Remove
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-          ))}
+          )}
         </div>
-      </div>
-
-      {/* Summary */}
-      <div style={{
-        padding: '16px 24px', background: 'var(--bg-tertiary)', border: '1px solid var(--border-primary)',
-        borderRadius: 'var(--radius-lg)', display: 'flex', alignItems: 'center', gap: 16
-      }}>
-        <Icons.Check style={{ width: 24, height: 24, color: 'var(--status-success)' }} />
-        <div>
-          <div style={{ fontSize: 'var(--text-md)', fontWeight: 600, color: 'var(--text-primary)' }}>
-            Upload Summary
-          </div>
-          <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>
-            {allComplete} of {files.length} complete · {totalErrors} errors · {totalWarnings} warnings · {files.filter(f => f.errors === 0 && f.status === 'complete').length} ready for processing
-          </div>
-        </div>
-        <div style={{ flex: 1 }} />
-        <button className="btn btn-primary" disabled title="Add sources when creating a project; adding them later is not built yet">Process Ready Files</button>
       </div>
     </div>
   );
