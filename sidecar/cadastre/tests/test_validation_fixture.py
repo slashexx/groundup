@@ -146,3 +146,49 @@ def test_two_easements_may_share_space(bundle):
                if f.rule_id is RuleId.OVERLAP_SIBLING
                and {f.unit_id, *f.related_unit_ids} == {"UGF-001", "UGF-002"}]
     assert not clashes, "two rights of way sharing a corridor is not an overlap"
+
+
+def test_a_shared_wall_between_small_units_is_not_an_overlap(bundle):
+    """Units narrower than their own tolerance cannot be eroded apart.
+
+    `shrink` falls back to the unbuffered geometry rather than returning something empty,
+    so two small neighbours that share a wall test as intersecting. Their intersection
+    has essentially no area, and reporting it produces exactly the noise that trains a
+    reviewer to dismiss findings. Found on 910 real Trivandrum footprints at a median
+    123 m2 - never on the fixture, whose units are large and well separated.
+    """
+    from copy import deepcopy
+
+    from cadastre.models import Relationship, RelType, RuleId
+    from cadastre.validate import run as run_validation
+
+    units = list(bundle["units"])
+    floor = next(u for u in units if u.unit_id == "FLR-002")
+
+    # Two 4 m huts sharing an edge, well under the ~7 cm... make them share exactly.
+    def hut(uid, x0, x1):
+        u = deepcopy(floor)
+        u.unit_id = uid
+        u.unit_type = type(floor.unit_type).APARTMENT
+        u.ulpin = u.ulpin_provisional = None
+        # SRC-006 declares 0.50 m accuracy, so the combined tolerance is 0.71 m. A 1 m
+        # hut cannot survive being eroded by that, so `shrink` falls back to the
+        # unbuffered geometry - which is the path this test exists to reach.
+        u.source_ids = ["SRC-006"]
+        u.footprint_2d = {"type": "Polygon", "coordinates": [[
+            [x0, 1434000.0], [x1, 1434000.0], [x1, 1434001.0], [x0, 1434001.0],
+            [x0, 1434000.0]]]}
+        return u
+
+    a, b = hut("HUT-A", 445100.0, 445101.0), hut("HUT-B", 445101.0, 445102.0)
+    units += [a, b]
+    rels = list(bundle["relationships"]) + [
+        Relationship("FLR-002", "HUT-A", RelType.CONTAINS, None),
+        Relationship("FLR-002", "HUT-B", RelType.CONTAINS, None),
+    ]
+
+    result = run_validation(units, rels, bundle["sources"], bundle["settings"])
+    spurious = [f for f in result.findings
+                if f.rule_id is RuleId.OVERLAP_SIBLING
+                and {f.unit_id, *f.related_unit_ids} == {"HUT-A", "HUT-B"}]
+    assert not spurious, f"shared wall reported as an overlap of {spurious[0].measured_value} m2"

@@ -70,7 +70,15 @@ def _rasters(conn: sqlite3.Connection) -> dict[str, list[dict]]:
     return out
 
 
-def derive_heights(conn: sqlite3.Connection, *, default_floor_count: int = 1) -> DeriveReport:
+#: Storey height assumed when dividing an envelope whose subdivision nobody has told us.
+#: Mid-range for Indian residential and commercial construction; the plausibility gate in
+#: validation is 2.4-5.0 m, so a wrong assumption here surfaces as a warning rather than
+#: passing quietly.
+ASSUMED_STOREY_M = 3.0
+
+
+def derive_heights(conn: sqlite3.Connection, *, default_floor_count: int = 1,
+                   estimate_floors: bool = False) -> DeriveReport:
     """Give every un-extruded building a height range and a floor stack.
 
     `default_floor_count` is used only when the footprint carried no storey count from
@@ -78,6 +86,13 @@ def derive_heights(conn: sqlite3.Connection, *, default_floor_count: int = 1) ->
     derived height is the honest representation of "we measured the envelope but were
     not told how it is divided", and validation flags an implausible storey height if
     that envelope is too tall to be a single floor.
+
+    `estimate_floors` opts in to dividing that envelope by `ASSUMED_STOREY_M`. This is a
+    guess, and it is recorded as one: every floor it produces carries
+    `floor_count_method: "ndsm_division"` and a low confidence, which is the same
+    treatment the inbound contract demands of the AI block for exactly this estimate.
+    FR-03 forbids guessing *silently*; it does not forbid an operator asking for an
+    estimate and being told it is one.
     """
     report = DeriveReport()
     by_kind = _rasters(conn)
@@ -118,7 +133,23 @@ def derive_heights(conn: sqlite3.Connection, *, default_floor_count: int = 1) ->
         save_unit(conn, rebuilt)
         report.heights_derived += 1
 
-        count = int(rebuilt.attributes.get("floor_count") or default_floor_count)
+        declared = rebuilt.attributes.get("floor_count")
+        if declared:
+            count, estimated = int(declared), False
+        elif estimate_floors and rebuilt.height:
+            count = max(1, round(rebuilt.height / ASSUMED_STOREY_M))
+            estimated = True
+        else:
+            count, estimated = default_floor_count, False
+
+        if estimated:
+            rebuilt.attributes = rebuilt.attributes | {
+                "floor_count": count,
+                "floor_count_method": "ndsm_division",
+                "assumed_storey_m": ASSUMED_STOREY_M,
+            }
+            rebuilt.confidence_score = 0.4      # an estimate, and flagged as one
+            save_unit(conn, rebuilt)
         for floor in flr.split(rebuilt, count, settings):
             if _identify(conn, floor, settings):
                 report.floors_identified += 1

@@ -42,6 +42,16 @@ ULPIN_RE = re.compile(
 )
 
 
+#: Widest sequence the 3-digit field can hold. A real plot holds a handful of units; a
+#: parcel that overflows this is almost always a ward or a block that was never
+#: subdivided. Widening it is a scheme version bump, which is what the V field is for.
+MAX_SEQUENCE = 999
+
+
+class SequenceExhausted(ValueError):
+    """More units on one stratum level of one parcel than the identifier can name."""
+
+
 class Stratum(str, Enum):
     ABOVE = "A"
     SURFACE = "S"
@@ -100,7 +110,12 @@ def format_ulpin(
     if not 0 <= level <= 99:
         raise ValueError(f"level must be 0-99, got {level}")
     if not 0 <= sequence <= 999:
-        raise ValueError(f"sequence must be 0-999, got {sequence}")
+        raise SequenceExhausted(
+            f"sequence {sequence} exceeds the 3-digit field: a parcel can carry at most "
+            f"{MAX_SEQUENCE + 1} units per stratum level. Reached under parent "
+            f"{parent_ulpin_14}, stratum {stratum.value}, level {level:02d}. Either the "
+            "parcel is really a ward and should be subdivided into plots, or the scheme "
+            "needs a wider field - which is a version bump, not a patch.")
 
     body = f"{parent}V{version}{stratum.value}{level:02d}{sequence:03d}"
     return f"{parent}-V{version}-{stratum.value}{level:02d}-{sequence:03d}-{check_char(body)}"
