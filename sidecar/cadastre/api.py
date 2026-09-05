@@ -77,6 +77,113 @@ class ProjectCreateRequest(BaseModel):
     sources: list[SourceInput] = []
 
 
+class AddSourcesRequest(BaseModel):
+    """Sources added to a project that already exists.
+
+    No settings here on purpose. The CRS, datum and strata were decided once when the
+    project was created and every unit in it already carries them; letting a later upload
+    restate them would let two halves of one project disagree about where they are.
+    """
+
+    db_path: str
+    sources: list[SourceInput] = []
+    #: Turn the new layers into units straight away. Off means the files are registered
+    #: and the operator ingests when ready.
+    ingest: bool = True
+
+
+@router.post("/sources")
+def add_sources(req: AddSourcesRequest) -> dict[str, Any]:
+    """Append sources to an existing project, then optionally re-ingest.
+
+    Re-ingesting is safe to repeat: units are matched on their source-local id, so a
+    footprint layer added to a project that already holds its parcels keeps those parcels
+    and the identifiers already issued against them.
+    """
+    gpkg = Path(req.db_path)
+    conn = sqlite3.connect(gpkg) if gpkg.exists() else None
+    try:
+        if conn is None:
+            raise HTTPException(404, f"{gpkg} does not exist. Create the project first.")
+        conn.row_factory = sqlite3.Row
+        try:
+            settings = load_project(conn)[3]
+        except store.ProjectIncomplete as err:
+            raise HTTPException(409, str(err)) from err
+    finally:
+        if conn:
+            conn.close()
+
+    for s in req.sources:
+        if not s.source_id:
+            s.source_id = project.new_source_id(s.source_type)
+
+    try:
+        added = project.add_sources(gpkg, settings, req.sources)
+    except project.ProjectCreateError as err:
+        raise HTTPException(422, str(err)) from err
+
+    result: dict[str, Any] = {
+        "db_path": added.db_path, "sources": added.sources, "layers": added.layers,
+        "rasters": added.rasters, "registered_only": added.registered_only,
+    }
+    if not req.ingest:
+        return result
+
+    conn = sqlite3.connect(added.db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        init_schema(conn)
+        report = ingest_gpkg.import_project(conn, load_project(conn)[3])
+        result |= {
+            "units": len(report.units), "created": report.created,
+            "reused": report.reused, "relationships": len(report.relationships),
+            "provisional_ulpins": report.minted,
+            "unresolved_buildings": report.unresolved,
+        }
+        result |= _derive_after_elevation(conn)
+    finally:
+        conn.close()
+    return result
+
+
+def _derive_after_elevation(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Extrude the buildings as soon as the project can measure them.
+
+    Registering a DEM and a DSM over a project of footprints has exactly one consequence
+    the operator wants, and making them go and find it on another screen is the app
+    hiding a required step: the elevation was registered, the ingest reported success,
+    and the 3D view stayed empty with no indication that anything remained to be done.
+
+    Heights only. `derive` can also divide an envelope into storeys, and that is a guess
+    from an assumed storey height, not a measurement - it stays behind the explicit
+    Floor segmentation button so nothing infers a floor stack on its own.
+    """
+    kinds = {
+        str(r["kind"]).upper()
+        for r in conn.execute("SELECT kind FROM raster")
+    } if _has_table(conn, "raster") else set()
+    if not {"DEM", "DSM"} <= kinds:
+        return {}
+    pending = conn.execute(
+        "SELECT count(*) FROM unit WHERE unit_type = 'building' AND lower_limit IS NULL"
+    ).fetchone()[0]
+    if not pending:
+        return {}
+    report = derive.derive_heights(conn, estimate_floors=False)
+    return {
+        "heights_derived": report.heights_derived,
+        "heights_skipped_no_raster": len(report.skipped_no_raster),
+        "heights_skipped_thin_coverage": len(report.skipped_thin_coverage),
+    }
+
+
+def _has_table(conn: sqlite3.Connection, name: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+    ).fetchone() is not None
+
+
 @router.get("/health")
 def health_check() -> dict[str, str]:
     return {"status": "ok", "block": "cadastre"}
@@ -431,6 +538,45 @@ def derive_from_rasters(req: DeriveRequest) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail=str(err)) from err
     except encode.SequenceExhausted as err:
         raise HTTPException(status_code=409, detail=str(err)) from err
+    finally:
+        conn.close()
+
+
+@router.get("/project")
+def open_project(db_path: str) -> dict[str, Any]:
+    """Read an existing project back without touching it.
+
+    The desktop app had exactly one way in - the create wizard - so a project built
+    yesterday could not be reopened today, and the toolbar's Open button had nothing to
+    call. Creating is not the same operation as opening, and making the operator re-run
+    the wizard over an existing GeoPackage is how the wizard came to overwrite one.
+
+    Deliberately read-only: it reports what the file holds, and refuses a file that is
+    not a project rather than initialising one at that path.
+    """
+    gpkg = Path(db_path)
+    if not gpkg.exists():
+        raise HTTPException(404, f"{gpkg} does not exist.")
+    conn = sqlite3.connect(gpkg)
+    conn.row_factory = sqlite3.Row
+    try:
+        try:
+            units, _rels, sources, settings = load_project(conn)
+        except store.ProjectIncomplete as err:
+            raise HTTPException(409, f"{gpkg.name} is not a cadastre project: {err}") from err
+        counts: dict[str, int] = {}
+        for u in units:
+            key = getattr(u.unit_type, "value", str(u.unit_type))
+            counts[key] = counts.get(key, 0) + 1
+        return {
+            "db_path": str(gpkg),
+            "name": gpkg.stem,
+            "project_crs": settings.project_crs,
+            "vertical_datum": settings.vertical_datum,
+            "units": len(units),
+            "unit_counts": counts,
+            "sources": [getattr(s, "source_id", str(s)) for s in sources],
+        }
     finally:
         conn.close()
 

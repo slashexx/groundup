@@ -300,3 +300,61 @@ def test_two_buildings_do_not_share_floor_ids(project):
     _units, _rels, _sources, settings = store.load_project(project)
     assert not ({f.unit_id for f in flr.split(a, 3, settings)}
                 & {f.unit_id for f in flr.split(b, 3, settings)})
+
+
+# --- the app should not need to be told twice ----------------------------------------
+
+def test_registering_elevation_extrudes_the_buildings_without_a_second_call(project):
+    """Adding a DEM and a DSM has one consequence the operator wants. Do it.
+
+    Registering elevation through the Upload Data screen reported success and left the
+    3D view empty, with nothing saying a step remained: `derive` lived behind a separate
+    button on another screen. The elevation is the measurement; extruding from it is not
+    a judgement call.
+    """
+    from cadastre.api import _derive_after_elevation
+
+    assert project.execute(
+        "SELECT count(*) FROM unit WHERE unit_type='building' AND lower_limit IS NULL"
+    ).fetchone()[0] == 1
+
+    result = _derive_after_elevation(project)
+    assert result["heights_derived"] == 1
+
+    b = store.get_unit(project, "BLD-1")
+    assert b.lower_limit is not None and b.upper_limit is not None
+
+
+def test_registering_elevation_does_not_invent_a_storey_count(project):
+    """The envelope is measured; how it is divided is not, and must not be guessed.
+
+    One floor spanning the whole derived height is deliberate - `derive_heights` calls it
+    the honest representation of "we measured the envelope but were not told how it is
+    divided". What must not happen automatically is dividing that envelope by an assumed
+    storey height, which is an inference and carries `ndsm_division` when asked for.
+    """
+    from cadastre.api import _derive_after_elevation
+
+    _derive_after_elevation(project)
+    rows = [store.get_unit(project, r["unit_id"]) for r in project.execute(
+        "SELECT unit_id FROM unit WHERE unit_type='floor'")]
+    assert len(rows) == 1, "the envelope itself, undivided"
+    assert not any(f.attributes.get("floor_count_method") for f in rows)
+
+
+def test_a_dem_with_no_dsm_extrudes_nothing(project):
+    """One surface is not a height range, and half a pair must not half-derive."""
+    from cadastre.api import _derive_after_elevation
+
+    project.execute("DELETE FROM raster WHERE kind = 'DSM'")
+    project.commit()
+    assert _derive_after_elevation(project) == {}
+    assert store.get_unit(project, "BLD-1").lower_limit is None
+
+
+def test_re_registering_elevation_is_not_a_second_derive(project):
+    """Every building already has a height, so there is nothing pending to extrude."""
+    from cadastre.api import _derive_after_elevation
+
+    _derive_after_elevation(project)
+    assert _derive_after_elevation(project) == {}

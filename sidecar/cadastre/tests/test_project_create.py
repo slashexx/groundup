@@ -187,3 +187,93 @@ def test_source_types_route_matches_what_the_module_handles(client):
     got = client.get("/cadastre/source-types").json()
     offered = set(got["vector"]) | set(got["raster"]) | set(got["register_only"])
     assert offered == project.SOURCE_TYPES
+
+
+# --- adding elevation to a project that already exists --------------------------------
+
+def _rasters(tmp_path, db_path):
+    """A DEM/DSM pair over the project's own units, in the project's own CRS.
+
+    Written in EPSG:32643 rather than the sources' EPSG:4326 on purpose: `raster.coverage`
+    divides the footprint's area by the raster's cell size, so a footprint in metres
+    against a raster in degrees reports coverage near zero and every building is skipped
+    as thin - a units mismatch that looks exactly like missing data.
+    """
+    import sqlite3
+
+    import numpy as np
+    import rasterio
+    import shapely.wkb
+    from rasterio.transform import from_origin
+
+    conn = sqlite3.connect(db_path)
+    geoms = [shapely.wkb.loads(r[0]) for r in conn.execute("SELECT footprint_wkb FROM unit")]
+    conn.close()
+    xs = [c for g in geoms for c in g.bounds[0::2]]
+    ys = [c for g in geoms for c in g.bounds[1::2]]
+    pad = 20.0
+    x0, y0, x1, y1 = min(xs) - pad, min(ys) - pad, max(xs) + pad, max(ys) + pad
+
+    res = 0.5                                     # half-metre, as a drone survey would be
+    w, h = int((x1 - x0) / res) + 1, int((y1 - y0) / res) + 1
+    out = []
+    for kind, value in (("dem", 100.0), ("dsm", 112.0)):
+        path = tmp_path / f"{kind}.tif"
+        with rasterio.open(
+            path, "w", driver="GTiff", height=h, width=w, count=1, dtype="float32",
+            crs="EPSG:32643", transform=from_origin(x0, y1, res, res),
+        ) as dst:
+            dst.write(np.full((h, w), value, "float32"), 1)
+        out.append(str(path))
+    return out
+
+
+def test_registering_elevation_extrudes_the_project_it_was_added_to(
+        client, tmp_path, parcels, buildings):
+    """The flow that left a project of footprints with an empty 3D view.
+
+    Elevation was registered, ingest reported success, and every building still had no
+    height: `derive` sat behind a button on another screen with nothing pointing at it.
+    Registering a DEM and a DSM over footprints has one consequence the operator wants.
+    """
+    import sqlite3
+
+    db = str(tmp_path / "new.gpkg")
+    r = client.post("/cadastre/project", json=body(
+        tmp_path, [source(parcels), source(buildings, "footprint")]))
+    assert r.status_code == 200, r.text
+
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT count(*) FROM unit WHERE unit_type='building' "
+                        "AND lower_limit IS NULL").fetchone()[0] == 1
+    conn.close()
+
+    dem, dsm = _rasters(tmp_path, db)
+    r = client.post("/cadastre/sources", json={
+        "db_path": db, "ingest": True,
+        "sources": [source(dem, "dem", crs="EPSG:32643"), source(dsm, "dsm", crs="EPSG:32643")],
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["heights_derived"] == 1, r.json()
+
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT count(*) FROM unit WHERE unit_type='building' "
+                        "AND lower_limit IS NULL").fetchone()[0] == 0
+    conn.close()
+
+
+def test_adding_a_vector_source_does_not_extrude_anything(client, tmp_path, parcels, buildings):
+    """No elevation registered, so there is still nothing to measure a height from."""
+    import sqlite3
+
+    db = str(tmp_path / "new.gpkg")
+    client.post("/cadastre/project", json=body(tmp_path, [source(parcels)]))
+    r = client.post("/cadastre/sources", json={
+        "db_path": db, "ingest": True, "sources": [source(buildings, "footprint")]})
+    assert r.status_code == 200, r.text
+    assert "heights_derived" not in r.json()
+
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT count(*) FROM unit WHERE unit_type='building' "
+                        "AND lower_limit IS NULL").fetchone()[0] == 1
+    conn.close()
