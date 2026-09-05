@@ -4,12 +4,50 @@ import { MapContainer, TileLayer, Polygon, Popup, Marker, useMap } from 'react-l
 import L from 'leaflet';
 import { Icons } from '../components/Icons';
 import { MAP_LAYERS } from '../data/layers';
+import { useCadastreDocument } from '../data/useCadastre';
+// P5 owns the projected-CRS-to-WGS84 conversion. Importing it rather than copying it
+// keeps one implementation: the desktop app and the published web build have to agree
+// on where a building is, exactly, and two copies of that maths would drift.
+import { fromP4Document } from '../../../viewer/src/lib/adapter';
 
-// The 2D/3D scene draws the project's own parcels and buildings once the map is
-// wired to the document. Hardcoded shapes lived here before, and they rendered a
-// ward that does not exist over whatever project was open.
-const PARCELS = [];
-const PARCEL_BUILDINGS = [];
+/** Units from the live document, split for the two Leaflet layers. */
+function useProjectGeometry() {
+  const { doc } = useCadastreDocument();
+  return useMemo(() => {
+    if (!doc) return { parcels: [], buildings: [], bounds: null };
+
+    const units = fromP4Document(doc);
+    // Leaflet wants [lat, lng]; the adapter returns GeoJSON order.
+    const latlng = (u) => u.ring.map(([lon, lat]) => [lat, lon]);
+
+    const parcels = units.filter((u) => u.unit_type === 'land_parcel');
+    const buildings = units.filter((u) => u.unit_type === 'building');
+
+    let bounds = null;
+    for (const u of units) {
+      for (const [lon, lat] of u.ring) {
+        bounds = bounds
+          ? [[Math.min(bounds[0][0], lat), Math.min(bounds[0][1], lon)],
+             [Math.max(bounds[1][0], lat), Math.max(bounds[1][1], lon)]]
+          : [[lat, lon], [lat, lon]];
+      }
+    }
+    return {
+      parcels: parcels.map((u) => ({ unit: u, positions: latlng(u) })),
+      buildings: buildings.map((u) => ({ unit: u, positions: latlng(u) })),
+      bounds,
+    };
+  }, [doc]);
+}
+
+/** Frame the project once its geometry arrives. */
+function FitToProject({ bounds }) {
+  const map = useMap();
+  useEffect(() => {
+    if (bounds) map.fitBounds(bounds, { padding: [40, 40] });
+  }, [bounds, map]);
+  return null;
+}
 
 /* Fix default Leaflet icon path issue */
 delete L.Icon.Default.prototype._getIconUrl;
@@ -488,7 +526,8 @@ export default function MapPage({ project, view = '2d' }) {
     setSelectedProperty(null);
   };
 
-  const selectedBuildingData = PARCEL_BUILDINGS.find(b => b.id === selectedBuildingId);
+  const { parcels: livePercels, buildings: liveBuildings, bounds } = useProjectGeometry();
+  const selectedBuildingData = liveBuildings.find(b => b.unit.unit_id === selectedBuildingId)?.unit;
 
   return (
     <>
@@ -523,16 +562,24 @@ export default function MapPage({ project, view = '2d' }) {
             <>
               <MapContainer center={center} zoom={17} style={{ height: '100%', width: '100%' }}
                 zoomControl={true} attributionControl={true}>
+                {/* OpenStreetMap, which needs no key. CARTO's dark tiles now require
+                    registration and serve an "API KEY REQUIRED" watermark across every
+                    tile without one — not something to discover during a demo. The dark
+                    treatment is a CSS filter on the tile pane instead. */}
                 <TileLayer
-                  url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-                  attribution='&copy; <a href="https://carto.com/">CARTO</a>'
+                  url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+                  className="basemap-dark"
+                  maxZoom={19}
+                  attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                 />
 
-                {/* Parcel polygons */}
-                {PARCELS.map(parcel => (
+                <FitToProject bounds={bounds} />
+
+                {/* Parcel polygons, from the project */}
+                {livePercels.map(({ unit: parcel, positions }) => (
                   <Polygon
-                    key={parcel.id}
-                    positions={generateParcelPolygon(parcel.coords, 0.0015)}
+                    key={parcel.unit_id}
+                    positions={positions}
                     pathOptions={{
                       color: '#00d4aa', weight: 1.5, fillColor: '#00d4aa',
                       fillOpacity: 0.08, dashArray: '4 4'
@@ -540,19 +587,19 @@ export default function MapPage({ project, view = '2d' }) {
                   >
                     <Popup>
                       <div style={{ fontFamily: 'Inter, sans-serif' }}>
-                        <div style={{ fontWeight: 700, color: '#00d4aa', marginBottom: 4 }}>{parcel.id}</div>
-                        <div style={{ fontSize: 12, color: '#94a3b8' }}>Type: {parcel.type}</div>
-                        <div style={{ fontSize: 12, color: '#94a3b8' }}>Area: {parcel.area}</div>
+                        <div style={{ fontWeight: 700, color: '#00d4aa', marginBottom: 4 }}>{parcel.label}</div>
+                        <div style={{ fontSize: 12, color: '#94a3b8' }}>Land parcel</div>
+                        <div style={{ fontSize: 12, color: '#94a3b8' }}>{parcel.status}</div>
                       </div>
                     </Popup>
                   </Polygon>
                 ))}
 
-                {/* Building footprints */}
-                {PARCEL_BUILDINGS.map(building => (
+                {/* Building footprints, from the project */}
+                {liveBuildings.map(({ unit: building, positions }) => (
                   <Polygon
-                    key={building.id}
-                    positions={generateBuildingPolygon(building.coords, 0.0008)}
+                    key={building.unit_id}
+                    positions={positions}
                     pathOptions={{
                       color: '#0ea5e9', weight: 2, fillColor: '#0ea5e9',
                       fillOpacity: 0.15
@@ -564,11 +611,14 @@ export default function MapPage({ project, view = '2d' }) {
                     <Popup>
                       <div style={{ fontFamily: 'Inter, sans-serif' }}>
                         <div style={{ fontWeight: 700, color: '#0ea5e9', marginBottom: 4 }}>
-                          {building.id} – {building.name}
+                          {building.label}
                         </div>
-                        <div style={{ fontSize: 12, color: '#94a3b8' }}>Floors: {building.floors} | Basement: {building.basement}</div>
-                        <div style={{ fontSize: 12, color: '#94a3b8' }}>Height: {building.height}m</div>
-                        <div style={{ fontSize: 12, color: '#94a3b8' }}>Units: {building.units.length}</div>
+                        <div style={{ fontSize: 12, color: '#94a3b8' }}>
+                          {building.base_m === null || building.top_m === null
+                            ? 'Height unknown'
+                            : `${(building.top_m - building.base_m).toFixed(1)} m tall`}
+                        </div>
+                        <div style={{ fontSize: 12, color: '#94a3b8' }}>{building.status}</div>
                       </div>
                     </Popup>
                   </Polygon>
