@@ -53,6 +53,14 @@ def siblings_overlap(ctx, run_id: str) -> list[Finding]:
                 continue
 
             inter = ga.intersection(gb)
+            # `shrink` returns the original geometry when erosion would annihilate it,
+            # so a unit narrower than its own tolerance is compared unbuffered - and two
+            # that merely share a wall then register as intersecting with zero area.
+            # Dense real footprints are full of these; a 0.00 m2 "overlap" is exactly the
+            # noise that teaches reviewers to stop reading findings.
+            if inter.area <= tolerance.negligible_area(tol_h):
+                continue
+
             out.append(finding(
                 run_id, RuleId.OVERLAP_SIBLING, Severity.ERROR, key[0],
                 f"Ownership volumes {key[0]} and {key[1]} overlap by "

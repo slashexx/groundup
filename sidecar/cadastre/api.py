@@ -154,6 +154,13 @@ class AcknowledgeRequest(BaseModel):
     actor: str
 
 
+class DeriveRequest(BaseModel):
+    db_path: str
+    #: Divide each envelope by an assumed storey height. A guess, recorded as one:
+    #: every unit it produces carries floor_count_method and a low confidence.
+    estimate_floors: bool = False
+
+
 @router.post("/validate")
 def run_validation(req: ValidationRequest) -> dict[str, Any]:
     """Validate every unit in the project and persist the run."""
@@ -400,7 +407,7 @@ def apply_suggestions(req: ValidationRequest) -> dict[str, Any]:
 
 
 @router.post("/derive")
-def derive_from_rasters(req: ValidationRequest) -> dict[str, Any]:
+def derive_from_rasters(req: DeriveRequest) -> dict[str, Any]:
     """Give imported buildings a height range and a floor stack from registered rasters.
 
     The seam between ingest, which imports footprints with no heights because P2
@@ -415,8 +422,10 @@ def derive_from_rasters(req: ValidationRequest) -> dict[str, Any]:
     conn = sqlite3.connect(req.db_path)
     conn.row_factory = sqlite3.Row
     try:
-        return derive.derive_heights(conn).as_dict()
+        return derive.derive_heights(conn, estimate_floors=req.estimate_floors).as_dict()
     except store.ProjectIncomplete as err:
+        raise HTTPException(status_code=409, detail=str(err)) from err
+    except encode.SequenceExhausted as err:
         raise HTTPException(status_code=409, detail=str(err)) from err
     finally:
         conn.close()

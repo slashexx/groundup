@@ -77,6 +77,10 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
       "k * math.hypot(a.vertical_m, b.vertical_m)"),
      "return 10.0, 10.0",
      "provenance-derived tolerance bypassed"),
+    ("validate/rules/overlap.py",
+     ("            if inter.area <= tolerance.negligible_area(tol_h):\n"
+      "                continue\n"), "",
+     "a shared wall between small units called a zero-area overlap"),
     ("extrude/raster.py",
      "return float(np.median(sample(dsm_path, footprint)))",
      "return float(np.percentile(sample(dsm_path, footprint), 90))",
