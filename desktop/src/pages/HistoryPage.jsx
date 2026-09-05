@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Icons } from '../components/Icons';
+import { NothingYet } from '../data/useCadastre';
 
 const typeColors = {
   upload: { bg: 'var(--accent-secondary-dim)', color: 'var(--accent-secondary)', icon: Icons.Upload },
@@ -64,6 +65,14 @@ export default function HistoryPage() {
       </div>
 
       {/* Timeline */}
+      {filtered.length === 0 && (
+        <NothingYet title="No activity trail available">
+          The sidecar records who acknowledged a finding and who approved a unit, but
+          exposes no route to read that back — there is no history endpoint to call. This
+          page stays empty rather than reconstructing a plausible one, because an audit
+          trail is read as evidence.
+        </NothingYet>
+      )}
       <div className="history-timeline">
         {filtered.map((item, i) => {
           const typeStyle = typeColors[item.type] || typeColors.settings;

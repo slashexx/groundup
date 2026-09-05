@@ -1,9 +1,17 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Icons } from '../components/Icons';
 import { cadastre, reviewRows } from '../data/cadastreApi';
-import { DataSourceBanner, useCadastreDocument } from '../data/useCadastre';
+import { DataSourceBanner, NothingYet, useCadastreDocument } from '../data/useCadastre';
 
 const stateFlow = ['Draft', 'Processing', 'Needs Review', 'Approved', 'Replaced', 'Closed'];
+
+/** How many of the queue this screen will draw at once.
+ *
+ *  The Trivandrum pilot arrives with about six thousand units in `needs_review`, and one
+ *  row per unit is thirty thousand DOM nodes that make the page unusable to scroll. The
+ *  count in the header is the real one; this only bounds what is painted, and the list
+ *  says so at the bottom rather than ending as though the queue did. */
+const VISIBLE = 200;
 
 /** A live unit, in the shape this screen already renders. */
 function toRecord(r) {
@@ -15,7 +23,7 @@ function toRecord(r) {
     building: r.floor === null ? '—' : `Floor index ${r.floor}`,
     floor: r.floor ?? '—',
     submittedBy: r.createdBy,
-    submittedDate: '—',
+    submittedDate: r.recordedFrom ? new Date(r.recordedFrom).toLocaleString() : '—',
     aiConfidence: r.confidence === null || r.confidence === undefined
       ? 'n/a'
       : `${(r.confidence * 100).toFixed(1)}%`,
@@ -31,16 +39,19 @@ function toRecord(r) {
 
 export default function ReviewPage() {
   const { doc, live, status: loadStatus, error: loadError, reload } = useCadastreDocument();
-  const [overrides, setOverrides] = useState({});
   const [selectedId, setSelectedId] = useState(null);
   const [comment, setComment] = useState('');
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState(null);
+  // What the last transition actually did. Kept at page level because a unit leaves the
+  // queue the moment it is approved: rendering the outcome inside its own row would make
+  // the record vanish on click with nothing said about where it went.
+  const [outcome, setOutcome] = useState(null);
 
-  const records = useMemo(() => {
-    const base = live && doc ? reviewRows(doc).map(toRecord) : [];
-    return base.map(r => (overrides[r.id] ? { ...r, ...overrides[r.id] } : r));
-  }, [live, doc, overrides]);
+  const records = useMemo(
+    () => (live && doc ? reviewRows(doc).map(toRecord) : []),
+    [live, doc],
+  );
 
   useEffect(() => {
     if (!records.some(r => r.id === selectedId)) setSelectedId(records[0]?.id ?? null);
@@ -48,37 +59,26 @@ export default function ReviewPage() {
 
   const selected = records.find(r => r.id === selectedId);
 
+  // The state machine is the authority. Approval is guarded on a recorded validation run
+  // with zero errors and every warning acknowledged, and freezes the ULPIN. A refusal is
+  // shown verbatim rather than being reflected in the UI as success — the guard is the
+  // feature, and a screen that reports an approval the register did not record is the one
+  // failure this app must never have.
   const handleAction = async (action) => {
     setActionError(null);
-
-    if (!live) {
-      setOverrides(prev => ({
-        ...prev,
-        [selectedId]:
-          action === 'approve' ? { status: 'Approved', state: 'approved' }
-            : action === 'reject' ? { status: 'Rejected', state: 'rejected' }
-              : { status: 'Sent Back', state: 'draft' },
-      }));
-      setComment('');
-      return;
-    }
-
-    // Live, the state machine is the authority. Approval is guarded on a recorded
-    // validation run with zero errors and every warning acknowledged, and freezes the
-    // ULPIN. A refusal is shown verbatim rather than being reflected in the UI as
-    // success — the guard is the feature.
+    setOutcome(null);
     const target = action === 'approve' ? 'approved' : 'draft';
     setBusy(true);
     try {
       const res = await cadastre.transition(selectedId, target, 'reviewer', comment || null);
       setComment('');
+      setOutcome({
+        unitId: res.unit_id,
+        status: res.status,
+        ulpin: res.ulpin,
+        sentBack: action !== 'approve',
+      });
       await reload();
-      if (action === 'approve') {
-        setOverrides(prev => ({
-          ...prev,
-          [selectedId]: { status: 'Approved', state: 'approved', ulpin: res.ulpin, provisional: false },
-        }));
-      }
     } catch (e) {
       setActionError(e.message);
     } finally {
@@ -91,11 +91,11 @@ export default function ReviewPage() {
       {/* Review List */}
       <div className="review-list">
         <div className="panel-header">
-          <span className="panel-title">Review Queue ({records.filter(r => r.state === 'review').length})</span>
+          <span className="panel-title">Review Queue ({records.length})</span>
         </div>
         <DataSourceBanner status={loadStatus} error={loadError} onRetry={reload} />
         <div className="review-list-items">
-          {records.map(record => (
+          {records.slice(0, VISIBLE).map(record => (
             <div key={record.id}
               className={`review-item${selectedId === record.id ? ' active' : ''}`}
               onClick={() => setSelectedId(record.id)}
@@ -104,7 +104,7 @@ export default function ReviewPage() {
                 <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', color: 'var(--accent-primary)', fontWeight: 600 }}>
                   {record.ulpin}
                 </span>
-                <span className={`status-badge ${record.state === 'review' ? 'review' : record.state === 'approved' ? 'approved' : record.state === 'rejected' ? 'rejected' : 'draft'}`} style={{ fontSize: '9px' }}>
+                <span className="status-badge review" style={{ fontSize: '9px' }}>
                   {record.status}
                 </span>
               </div>
@@ -122,12 +122,42 @@ export default function ReviewPage() {
               )}
             </div>
           ))}
+          {records.length > VISIBLE && (
+            <div style={{ padding: 12, fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>
+              Showing the first {VISIBLE} of {records.length}. The rest are in the queue,
+              not missing — narrow it on the Search screen to reach a particular unit.
+            </div>
+          )}
         </div>
       </div>
 
       {/* Review Detail */}
-      {selected && (
-        <div className="review-detail">
+      <div className="review-detail">
+        {outcome && (
+          <div style={{
+            padding: 16, marginBottom: 24, borderRadius: 'var(--radius-md)',
+            background: outcome.sentBack ? 'var(--bg-tertiary)' : 'var(--status-success-bg)',
+            display: 'flex', alignItems: 'center', gap: 12,
+          }}>
+            <Icons.Check style={{ width: 20, height: 20, color: outcome.sentBack ? 'var(--text-tertiary)' : 'var(--status-success)' }} />
+            <span style={{ color: outcome.sentBack ? 'var(--text-secondary)' : 'var(--status-success)', fontWeight: 600, fontSize: 'var(--text-sm)' }}>
+              {outcome.sentBack
+                ? `${outcome.unitId} sent back to draft. It has left the review queue.`
+                : `${outcome.unitId} approved. ULPIN ${outcome.ulpin} is now frozen to it.`}
+            </span>
+          </div>
+        )}
+
+        {!selected && live && (
+          <NothingYet title="Nothing waiting for review">
+            No unit in this project is in <code>needs_review</code>. Units arrive here after
+            ingest or after a suggestion is applied; a queue of zero is the register saying
+            there is nothing to decide, not that it has not looked.
+          </NothingYet>
+        )}
+
+        {selected && (
+          <>
           <h2 style={{ fontSize: 'var(--text-xl)', fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>
             Review Record
           </h2>
@@ -227,58 +257,47 @@ export default function ReviewPage() {
           </div>
 
           {/* Actions */}
-          {selected.state === 'review' && (
-            <>
-              {actionError && (
-                <div style={{
-                  padding: 12, marginBottom: 12, borderRadius: 'var(--radius-md)',
-                  background: 'var(--status-error-bg)', color: 'var(--status-error)',
-                  fontSize: 'var(--text-sm)',
-                }}>
-                  {actionError}
-                </div>
-              )}
-              {live && selected.approvable === false && (
-                <div style={{
-                  padding: 12, marginBottom: 12, borderRadius: 'var(--radius-md)',
-                  background: 'var(--bg-tertiary)', color: 'var(--text-tertiary)',
-                  fontSize: 'var(--text-sm)',
-                }}>
-                  {selected.errors > 0
-                    ? `${selected.errors} error(s) must be fixed and the checks re-run before this can be approved.`
-                    : `${selected.unacknowledged} warning(s) must be acknowledged on the Check Errors screen first.`}
-                </div>
-              )}
-              <div style={{ display: 'flex', gap: 12 }}>
-                <button className="btn btn-success btn-lg" disabled={busy}
-                  onClick={() => handleAction('approve')}
-                  title={live && !selected.approvable ? 'Blocked by the validation guard' : 'Approve and freeze the ULPIN'}>
-                  <Icons.Check style={{ width: 16, height: 16 }} /> {busy ? 'Working…' : 'Approve'}
-                </button>
-                <button className="btn btn-danger btn-lg" disabled={busy} onClick={() => handleAction('reject')}>
-                  <Icons.Close style={{ width: 16, height: 16 }} /> Reject
-                </button>
-                <button className="btn btn-secondary btn-lg" disabled={busy} onClick={() => handleAction('sendback')}>
-                  <Icons.ArrowLeft style={{ width: 16, height: 16 }} /> Send Back for Correction
-                </button>
-              </div>
-            </>
-          )}
-
-          {selected.state !== 'review' && (
-            <div style={{ padding: 16, background: selected.state === 'approved' ? 'var(--status-success-bg)' : 'var(--status-error-bg)',
-              borderRadius: 'var(--radius-md)', display: 'flex', alignItems: 'center', gap: 12 }}>
-              {selected.state === 'approved' ?
-                <Icons.Check style={{ width: 20, height: 20, color: 'var(--status-success)' }} /> :
-                <Icons.Close style={{ width: 20, height: 20, color: 'var(--status-error)' }} />
-              }
-              <span style={{ color: selected.state === 'approved' ? 'var(--status-success)' : 'var(--status-error)', fontWeight: 600 }}>
-                Record {selected.status}
-              </span>
+          {actionError && (
+            <div style={{
+              padding: 12, marginBottom: 12, borderRadius: 'var(--radius-md)',
+              background: 'var(--status-error-bg)', color: 'var(--status-error)',
+              fontSize: 'var(--text-sm)',
+            }}>
+              {actionError}
             </div>
           )}
-        </div>
-      )}
+          {selected.approvable === false && (
+            <div style={{
+              padding: 12, marginBottom: 12, borderRadius: 'var(--radius-md)',
+              background: 'var(--bg-tertiary)', color: 'var(--text-tertiary)',
+              fontSize: 'var(--text-sm)',
+            }}>
+              {selected.errors > 0
+                ? `${selected.errors} error(s) must be fixed and the checks re-run before this can be approved.`
+                : `${selected.unacknowledged} warning(s) must be acknowledged on the Check Errors screen first.`}
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 12 }}>
+            <button className="btn btn-success btn-lg" disabled={busy}
+              onClick={() => handleAction('approve')}
+              title={selected.approvable ? 'Approve and freeze the ULPIN' : 'Blocked by the validation guard'}>
+              <Icons.Check style={{ width: 16, height: 16 }} /> {busy ? 'Working…' : 'Approve'}
+            </button>
+            {/* There is no rejected status. FR-09's machine takes needs_review to approved
+                or back to draft and nowhere else, so a Reject button could only be Send
+                Back wearing a word the register would never record. */}
+            <button className="btn btn-danger btn-lg" disabled
+              title="The record lifecycle has no rejected state — needs_review goes to approved or back to draft. Use Send Back for Correction.">
+              <Icons.Close style={{ width: 16, height: 16 }} /> Reject
+            </button>
+            <button className="btn btn-secondary btn-lg" disabled={busy} onClick={() => handleAction('sendback')}
+              title="Return this unit to draft for correction">
+              <Icons.ArrowLeft style={{ width: 16, height: 16 }} /> Send Back for Correction
+            </button>
+          </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }

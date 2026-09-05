@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Routes, Route, Navigate } from "react-router-dom";
+import PageBoundary from './components/PageBoundary';
+import { Routes, Route, Navigate, useLocation } from "react-router-dom";
 import CreateProjectPage from "./pages/CreateProjectPage";
 import AppShell from "./components/layout/AppShell";
 import DashboardPage from "./pages/DashboardPage";
@@ -17,6 +18,7 @@ import { CadastreProvider } from "./data/useCadastre";
 import { setProjectPath } from "./data/cadastreApi";
 
 export default function App() {
+  const location = useLocation();
   const [selectedProject, setSelectedProject] = useState(null);
   // One operator, no sign-in. Everything from upload through approval to export happens
   // as a single account, so an auth gate in front of it is ceremony with nothing behind
@@ -29,14 +31,14 @@ export default function App() {
   // failure this system exists to prevent.
   if (!selectedProject) {
     return (
-      <CreateProjectPage
+      <PageBoundary><CreateProjectPage
         onCreated={(project) => {
           // Point every later call at the project that was just built, before any screen
           // mounts and asks for it.
           setProjectPath(project.db_path);
           setSelectedProject(project);
         }}
-      />
+      /></PageBoundary>
     );
   }
 
@@ -45,6 +47,9 @@ export default function App() {
   return (
     <CadastreProvider>
     <AppShell project={selectedProject} user={user} onChangeProject={() => setSelectedProject(null)}>
+      {/* Keyed on the path so a failure on one screen clears when you leave it, rather
+          than following you to the next. */}
+      <PageBoundary key={location.pathname}>
       <Routes>
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<DashboardPage project={selectedProject} />} />
@@ -61,6 +66,7 @@ export default function App() {
         <Route path="/settings" element={<SettingsPage project={selectedProject} />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
+      </PageBoundary>
     </AppShell>
     </CadastreProvider>
   );
