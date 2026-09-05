@@ -27,5 +27,14 @@ export default defineConfig(async () => ({
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
     },
+    // 4. let this app import P5's adapter from ../viewer.
+    //
+    // The projected-CRS-to-WGS84 conversion is the one piece of geometry logic the
+    // desktop app and the published web build must agree on exactly, and P5 already
+    // owns it. Copying it here would be a second implementation of the same maths,
+    // free to drift; there is no root workspace yet, so this is the narrowest way to
+    // share the one that exists. When a workspace lands, this becomes a package import
+    // and this allowance goes away.
+    fs: { allow: [".", "../viewer"] },
   },
 }));

@@ -2844,3 +2844,11 @@ a {
 .list-table-action:hover {
   text-decoration: underline;
 }
+
+
+/* Dark basemap without a tile key.
+   OpenStreetMap serves one light style; inverting and re-hueing it in the browser gives
+   a dark map that matches the app, costs nothing, and needs no account. */
+.basemap-dark {
+  filter: invert(1) hue-rotate(180deg) brightness(0.85) contrast(0.9) saturate(0.6);
+}
