@@ -103,6 +103,10 @@ path:
 - **`ESCAPES_PARENT` on UGF-001.** The water main spans both parcels and extends beyond
   them. It must **not** be flagged. A validator that flags it has implemented containment
   unconditionally and is wrong.
+- **`ESCAPES_PARENT` on ELV-001.** The same reasoning one stratum up: an elevated walkway
+  parented to PCL-001 that carries on past it into the neighbour. Both strata are covered
+  deliberately — a containment rule conditioned on `unit_type` could get the underground
+  case right and the elevated case wrong, and one negative test would not notice.
 - **`GAP_SIBLING` on FLR-001.** The three flats tile it exactly.
 
 Negative tests are what stop a validation engine degenerating into "flag everything",

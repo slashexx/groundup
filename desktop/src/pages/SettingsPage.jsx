@@ -13,13 +13,10 @@ export default function SettingsPage({ project }) {
     setTimeout(() => setSaved(false), 2000);
   };
 
-  const mockUsers = [
-    { name: 'Arjun Rao', role: 'GIS Operator', email: 'arjun@ulpin.gov.in', status: 'Active' },
-    { name: 'Priya Sharma', role: 'Reviewer', email: 'priya@ulpin.gov.in', status: 'Active' },
-    { name: 'Raj Kumar', role: 'Surveyor', email: 'raj@ulpin.gov.in', status: 'Active' },
-    { name: 'Meera Nair', role: 'Administrator', email: 'meera@ulpin.gov.in', status: 'Active' },
-    { name: 'Vikram Singh', role: 'Planner', email: 'vikram@ulpin.gov.in', status: 'Inactive' },
-  ];
+  // One operator, no sign-in, no user directory. Five named officials with
+  // government email addresses were listed here, none of whom exist. Multi-user
+  // access is FR-11 and needs a real identity store behind it.
+  const users = [];
 
   return (
     <div className="settings-page">
@@ -137,7 +134,7 @@ export default function SettingsPage({ project }) {
               </tr>
             </thead>
             <tbody>
-              {mockUsers.map((user, i) => (
+              {users.map((user, i) => (
                 <tr key={i}>
                   <td style={{ color: 'var(--text-primary)', fontWeight: 500 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>

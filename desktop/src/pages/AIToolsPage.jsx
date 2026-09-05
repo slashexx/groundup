@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Icons } from '../components/Icons';
-import { mockAITools } from '../data/mockData';
+import { AI_TOOLS } from '../data/aiTools';
 
 const iconMap = {
   building: Icons.Building,
@@ -10,18 +10,13 @@ const iconMap = {
   diff: Icons.Diff,
 };
 
-const mockAIResults = [
-  { id: 'AI-R001', tool: 'Building Extraction', building: 'B322', confidence: 96.2, status: 'pending',
-    description: 'Detected new building footprint at coordinates 12.9742°N, 77.5968°E', modelVersion: 'v3.2.1' },
-  { id: 'AI-R002', tool: 'Floor Segmentation', building: 'B318', confidence: 91.5, status: 'pending',
-    description: 'Segmented 8 above-ground floors and 1 basement level', modelVersion: 'v2.5.3' },
-  { id: 'AI-R003', tool: 'Height Estimation', building: 'B320', confidence: 87.3, status: 'pending',
-    description: 'Estimated building height: 22.4m from LiDAR point cloud analysis', modelVersion: 'v2.8.0' },
-];
+// Suggestions come from P3 through the sidecar. Until a detection run has
+// happened there are none, and inventing a few with confidence scores attached
+// would put a number next to a building nobody detected.
 
 export default function AIToolsPage() {
   const [selectedTool, setSelectedTool] = useState(null);
-  const [results, setResults] = useState(mockAIResults);
+  const [results, setResults] = useState([]);
   const [runningJob, setRunningJob] = useState(null);
 
   const handleRun = (tool) => {
@@ -55,7 +50,7 @@ export default function AIToolsPage() {
 
       {/* AI Tool Cards */}
       <div className="ai-tool-grid">
-        {mockAITools.map(tool => {
+        {AI_TOOLS.map(tool => {
           const ToolIcon = iconMap[tool.icon] || Icons.AI;
           return (
             <div className="ai-tool-card" key={tool.id} onClick={() => setSelectedTool(tool)}>

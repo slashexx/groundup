@@ -53,9 +53,9 @@ export function CadastreProvider({ children }) {
  * The shared project document.
  *
  * `live` is the flag every screen uses to decide whether it is showing the real project
- * or the mock data this app shipped with — it must be surfaced, not swallowed. A
- * reviewer looking at invented numbers believing they are the project is the failure
- * mode this exists to prevent.
+ * or nothing at all — it must be surfaced, not swallowed. A reviewer looking at invented
+ * numbers believing they are the project is the failure mode this exists to prevent,
+ * which is why there is no longer any sample data for a screen to fall back to.
  */
 export function useCadastreDocument() {
   const ctx = useContext(CadastreContext)
@@ -81,7 +81,7 @@ export function DataSourceBanner({ status, error, onRetry }) {
     status === 'loading'
       ? 'Connecting to the cadastre sidecar…'
       : status === 'offline'
-        ? 'Cadastre sidecar not running — showing sample data, not this project. ' +
+        ? 'Cadastre sidecar not running — this screen has no data to show. ' +
           'Start it with: python -m uvicorn cadastre.app:app --app-dir sidecar --port 8000'
         : `Cadastre sidecar returned an error: ${error}`
 
@@ -104,6 +104,23 @@ export function DataSourceBanner({ status, error, onRetry }) {
           Retry
         </button>
       )}
+    </div>
+  )
+}
+
+/**
+ * What a screen shows when the project genuinely holds nothing for it yet.
+ *
+ * Not a spinner and not a zero: both read as "checked, and there is nothing", which is a
+ * different claim from "nothing has been run". A fresh project has no findings because
+ * validation has not happened, and a screen reporting "0 errors" would be stating a
+ * clean bill of health it has no basis for.
+ */
+export function NothingYet({ title, children }) {
+  return (
+    <div className="upload-dropzone" style={{ cursor: 'default' }}>
+      <div className="upload-dropzone-title">{title}</div>
+      <div className="upload-dropzone-subtitle">{children}</div>
     </div>
   )
 }

@@ -166,7 +166,7 @@ sidecar/cadastre/
 
 ### 4.1 REST API Reference ([`api.py`](./api.py))
 
-Fifteen operations across fourteen paths on `http://127.0.0.1:8000`, served by
+Seventeen operations across sixteen paths on `http://127.0.0.1:8000`, served by
 `cadastre.app:app` — **not** `cadastre.api:router`, which uvicorn starts happily and
 then answers 500 on every request. Interactive docs at `/docs`; `GET /` enumerates the
 paths from the router itself.
@@ -219,6 +219,92 @@ Status codes are used consistently and are worth typing against:
 ```json
 { "status": "ok", "block": "cadastre" }
 ```
+
+---
+
+#### `GET /cadastre/source-types`
+
+What a project may be built from. Served rather than hardcoded in P1 so the wizard's
+form and `project.py` cannot drift: a type the form offers but the module does not
+handle is a file the operator selects and the project silently ignores.
+
+```json
+{
+ "vector": {"parcel_map": "parcel", "footprint": "building_footprint", "utility": "utility_line"},
+ "raster": {"dem": "DEM", "dsm": "DSM", "ortho": "ORTHO"},
+ "register_only": ["floorplan", "pointcloud", "survey_control"]
+}
+```
+
+- **`vector`** — harmonized by P2 into the named contract layer, in the project CRS.
+- **`raster`** — registered where the file sits and read by `derive`; not copied.
+- **`register_only`** — provenance with no geometry P4 reads as a unit. `pointcloud` is
+  here rather than under `raster` because P4 reads a DEM/DSM *derived* from a LAS/LAZ
+  tile, never the tile itself.
+
+---
+
+#### `POST /cadastre/project`
+
+Builds a project GeoPackage from the operator's own files and imports it, in one call.
+This is what P1's creation wizard posts. Everything else in this block consumes a project
+that already exists; this is the route that makes one.
+
+```json
+{
+ "db_path": "ward42.gpkg",
+ "project_crs": "EPSG:32643", "vertical_datum": "EGM2008",
+ "stratum_below_limit_m": -30.0, "stratum_above_limit_m": 150.0,
+ "default_plinth_offset_m": 0.6, "default_parapet_deduction_m": 0.0,
+ "ulpin_version": "v1", "ruleset_version": "r1",
+ "sources": [
+  {"path": "/data/ward42/parcels.geojson", "source_type": "parcel_map",
+   "name": "Ward 42 parcel map", "provider": "Survey of India",
+   "capture_date": "2026-03-11", "crs": "EPSG:4326", "vertical_datum": "EGM2008",
+   "horizontal_accuracy_m": 0.30, "vertical_accuracy_m": 0.50}
+ ]
+}
+```
+
+```json
+{
+ "db_path": "ward42.gpkg",
+ "sources": ["SRC-PARCEL-MAP-b941f9"], "layers": ["parcel"],
+ "rasters": [], "registered_only": [],
+ "units": 1, "relationships": 0, "provisional_ulpins": 1,
+ "unresolved_buildings": []
+}
+```
+
+Creation and ingest are one operation because a project holding no units is not a state
+worth exposing: the wizard would need a second call to reach a usable project, and a
+failure between the two leaves a file that looks like a project and answers every query
+with nothing.
+
+**Paths, not uploads.** The sidecar and P1 run on the same machine — that is the whole
+desktop-first design — so a source is named by its path. A 12 GB point cloud is not
+copied into the project folder to satisfy tidiness; `raster.path` exists to point at one
+where it lies.
+
+Five refusals, each with a test and a mutation:
+
+- **`horizontal_accuracy_m` and `vertical_accuracy_m` are mandatory** and must exceed
+  zero. `contracts/inbound/p2-geopackage.md` says so in bold: P4 derives every geometric
+  tolerance from them via `tol = k * sqrt(acc_a² + acc_b²)`. P2's `process_file` defaults
+  them to 0.20/0.25 m; this route refuses instead, because a default makes every source
+  silently claim survey grade and turns measurement noise into reported encroachments.
+  Genuinely unknown accuracy is recorded as a conservative number with
+  `processing_status: "accuracy_estimated"` — never by omitting the field.
+- **A non-zero `default_parapet_deduction_m` is refused.** `extrude.building` already
+  raises `EstimatorMismatch` on it, but only at derive time — by then the project exists
+  and the data is imported, and the field the operator must change is three screens back.
+  The wizard is where a person types the number, so it is refused there too.
+- **An unknown `source_type` is refused** and the error names the known ones.
+- **A project needs at least one vector source.** A DEM is registered *against* a
+  project; it cannot be the thing that starts one, and the GeoPackage does not exist as a
+  file until a layer is written to it.
+- **A missing file is named** before anything is built, rather than half-constructing a
+  project around it.
 
 ---
 

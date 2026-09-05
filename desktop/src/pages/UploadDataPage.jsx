@@ -10,23 +10,13 @@ const fileTypes = [
   { ext: 'GeoTIFF', desc: 'DEM/DSM elevation', icon: '🏔️' },
 ];
 
-const mockUploadedFiles = [
-  { name: 'ward42_parcels.geojson', size: '2.4 MB', type: 'GeoJSON', status: 'complete', progress: 100,
-    validation: { crs: true, height: true, geometry: true, fields: false, accuracy: true },
-    errors: 0, warnings: 1, message: 'Missing "owner_name" field in 3 records' },
-  { name: 'block_b_drone_ortho.tif', size: '145 MB', type: 'GeoTIFF', status: 'complete', progress: 100,
-    validation: { crs: true, height: true, geometry: true, fields: true, accuracy: true },
-    errors: 0, warnings: 0, message: 'All checks passed' },
-  { name: 'b318_lidar.las', size: '89 MB', type: 'LAS', status: 'processing', progress: 67,
-    validation: { crs: true, height: null, geometry: null, fields: null, accuracy: null },
-    errors: 0, warnings: 0, message: 'Processing...' },
-  { name: 'b320_floorplan_f3.pdf', size: '3.1 MB', type: 'PDF', status: 'complete', progress: 100,
-    validation: { crs: false, height: false, geometry: true, fields: true, accuracy: false },
-    errors: 2, warnings: 0, message: 'Missing CRS and height reference' },
-];
+// Files arrive through the project wizard, which registers each one with its
+// provider, capture date and accuracy. Four fabricated uploads sat here, each
+// carrying validation results — ticks and crosses against checks that had never
+// been run on files that were never there.
 
 export default function UploadDataPage() {
-  const [files, setFiles] = useState(mockUploadedFiles);
+  const [files, setFiles] = useState([]);
   const [dragOver, setDragOver] = useState(false);
 
   const totalErrors = files.reduce((sum, f) => sum + f.errors, 0);

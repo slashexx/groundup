@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
-import LoginPage from "./pages/LoginPage";
-import ProjectSelectPage from "./pages/ProjectSelectPage";
+import CreateProjectPage from "./pages/CreateProjectPage";
 import AppShell from "./components/layout/AppShell";
 import DashboardPage from "./pages/DashboardPage";
 import MapPage from "./pages/MapPage";
@@ -14,28 +13,29 @@ import SearchPage from "./pages/SearchPage";
 import ExportPage from "./pages/ExportPage";
 import HistoryPage from "./pages/HistoryPage";
 import SettingsPage from "./pages/SettingsPage";
-import { mockProjects, mockUser } from "./data/mockData";
 import { CadastreProvider } from "./data/useCadastre";
+import { setProjectPath } from "./data/cadastreApi";
 
 export default function App() {
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [selectedProject, setSelectedProject] = useState(null);
-  const [user, setUser] = useState(mockUser);
+  // One operator, no sign-in. Everything from upload through approval to export happens
+  // as a single account, so an auth gate in front of it is ceremony with nothing behind
+  // it. Who decided what is recorded by the sidecar in `review.decided_by`, not here.
+  const user = { name: 'Operator', role: 'GIS Operator', initials: 'OP' };
 
-  if (!isLoggedIn) {
-    return <LoginPage onLogin={(role) => {
-      setUser({ ...mockUser, role });
-      setIsLoggedIn(true);
-    }} />;
-  }
-
+  // Creating a project is the only way in. There is no list of existing projects to
+  // choose from, because a project this app did not build is one whose numbers came from
+  // nowhere — and a dashboard of invented figures that looks authoritative is the exact
+  // failure this system exists to prevent.
   if (!selectedProject) {
     return (
-      <ProjectSelectPage
-        projects={mockProjects}
-        user={user}
-        onSelectProject={(project) => setSelectedProject(project)}
-        onLogout={() => setIsLoggedIn(false)}
+      <CreateProjectPage
+        onCreated={(project) => {
+          // Point every later call at the project that was just built, before any screen
+          // mounts and asks for it.
+          setProjectPath(project.db_path);
+          setSelectedProject(project);
+        }}
       />
     );
   }
@@ -44,7 +44,7 @@ export default function App() {
   // disagree about whether they are showing the real project.
   return (
     <CadastreProvider>
-    <AppShell project={selectedProject} user={user} onChangeProject={() => setSelectedProject(null)} onLogout={() => { setIsLoggedIn(false); setSelectedProject(null); }}>
+    <AppShell project={selectedProject} user={user} onChangeProject={() => setSelectedProject(null)}>
       <Routes>
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<DashboardPage project={selectedProject} />} />

@@ -102,7 +102,7 @@ practice: downstream teams build against it before our real code exists.
 Schemas describe shapes. These are the routes that actually move them between blocks,
 added when P1, P2, P4 and P5 were first wired together.
 
-> **Where the API reference lives:** exact request and response bodies for all fifteen
+> **Where the API reference lives:** exact request and response bodies for all seventeen
 > operations are in [`sidecar/cadastre/README.md`](../sidecar/cadastre/README.md) §4.1,
 > with every example captured from a running sidecar. This file keeps the *decisions* —
 > why a route exists, what it refuses and why — and the reference keeps the shapes. Two
@@ -219,3 +219,14 @@ CORS is an explicit origin list (the Tauri devUrl `:1420`, Vite `:5173`, package
 `tauri://localhost`), not `*`: the sidecar listens on localhost while a browser is open
 on the same machine, and a wildcard would let any page the reviewer visits read the
 project.
+
+**Which makes the ports load-bearing at demo time.** A browser on any other port is not
+on the list, so P1 falls back to its mock data and *says* it did — correct behaviour that
+looks exactly like a broken demo. P1 must be on `:1420` and P5 on `:5173`; P6 needs
+neither, because it fetches its own bundled `data/document.json` and never reaches the
+sidecar at runtime. When two of them want `:5173`, the one to move is P6.
+
+**Reach every one of them at `localhost`, never `127.0.0.1`.** Vite binds `[::1]` alone,
+so `http://127.0.0.1:1420` connects to nothing while `http://localhost:1420` serves. The
+sidecar binds `127.0.0.1` and answers on both names, so `localhost` is the one spelling
+that works everywhere. Measured 2026-09-05, on three Vite servers at once.

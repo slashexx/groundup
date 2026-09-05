@@ -62,7 +62,18 @@ python3 -m venv .venv && ./.venv/bin/pip install shapely pytest hypothesis jsons
 ```
 
 `.venv/` is git-ignored. `pyproject.toml` under `sidecar/cadastre/` holds the real
-dependency list.
+dependency list. The same venv runs all three Python blocks — P2 and P3 import from it
+too, and `run_chain.py` calls them in-process rather than over HTTP.
+
+The three JavaScript blocks each install separately: `desktop/` on npm, `viewer/` and
+`web/` on pnpm. `web/` needs `viewer/` installed as well, because `@viewer` aliases
+`../viewer/src/lib` and those sources resolve their bare imports against
+`viewer/node_modules` — see `blocks/p6-web.md`.
+
+**P1 packages as a native Tauri app and that needs a Rust toolchain.** Without `cargo`,
+`npm run tauri dev` fails and `npm run dev` serves the same React app in a browser on the
+same port, with the same sidecar wiring. Nothing in the review UX depends on the native
+shell, so a machine without Rust can still run and demonstrate the whole chain.
 
 ## When a decision changes, check `contracts/` first
 

@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Icons } from '../components/Icons';
-import { mockReviewRecords } from '../data/mockData';
 import { cadastre, reviewRows } from '../data/cadastreApi';
 import { DataSourceBanner, useCadastreDocument } from '../data/useCadastre';
 
@@ -39,7 +38,7 @@ export default function ReviewPage() {
   const [actionError, setActionError] = useState(null);
 
   const records = useMemo(() => {
-    const base = live && doc ? reviewRows(doc).map(toRecord) : mockReviewRecords;
+    const base = live && doc ? reviewRows(doc).map(toRecord) : [];
     return base.map(r => (overrides[r.id] ? { ...r, ...overrides[r.id] } : r));
   }, [live, doc, overrides]);
 

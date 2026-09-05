@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from . import derive, detect, export, ingest_gpkg, store, suggestions, validate
+from . import derive, detect, export, ingest_gpkg, project, store, suggestions, validate
 from .store import (
     ProjectIncomplete,
     acknowledge_finding,
@@ -30,6 +31,46 @@ class TransitionRequest(BaseModel):
 
 class ValidationRequest(BaseModel):
     db_path: str
+
+
+class SourceInput(BaseModel):
+    """One file the operator is bringing in, with the metadata the contract requires.
+
+    Both accuracy fields are required. `contracts/inbound/p2-geopackage.md` says so in
+    bold and gives the reason: P4 derives every comparison tolerance from them, so a
+    default here would make each source silently claim survey-grade accuracy and turn
+    ordinary measurement noise into reported encroachments. A caller that does not know
+    the accuracy of its data must say so with a conservative number and
+    `processing_status="accuracy_estimated"`, not by leaving the field out.
+    """
+
+    path: str
+    source_type: str
+    name: str
+    provider: str
+    capture_date: str
+    crs: str
+    vertical_datum: str
+    horizontal_accuracy_m: float = Field(..., gt=0)
+    vertical_accuracy_m: float = Field(..., gt=0)
+    resolution_m: float | None = None
+    processing_status: str = "harmonized"
+    source_id: str = ""
+
+
+class ProjectCreateRequest(BaseModel):
+    """Everything the P1 wizard collects. Mirrors `project_settings` plus the sources."""
+
+    db_path: str
+    project_crs: str = "EPSG:32643"
+    vertical_datum: str = "EGM2008"
+    stratum_below_limit_m: float = -30.0
+    stratum_above_limit_m: float = 150.0
+    default_plinth_offset_m: float = 0.6
+    default_parapet_deduction_m: float = 0.0
+    ulpin_version: str = "v1"
+    ruleset_version: str = "r1"
+    sources: list[SourceInput] = []
 
 
 @router.get("/health")
@@ -377,5 +418,94 @@ def derive_from_rasters(req: ValidationRequest) -> dict[str, Any]:
         return derive.derive_heights(conn).as_dict()
     except store.ProjectIncomplete as err:
         raise HTTPException(status_code=409, detail=str(err)) from err
+    finally:
+        conn.close()
+
+
+@router.get("/source-types")
+def source_types() -> dict[str, Any]:
+    """What the wizard is allowed to offer, straight from the module that consumes it.
+
+    Served rather than hardcoded in P1 so the two cannot drift: a type the form offers
+    but `project.py` does not handle is a file the operator selects and the project
+    silently ignores.
+    """
+    return {
+        "vector": {k: v for k, v in project.VECTOR_LAYERS.items()},
+        "raster": {k: v for k, v in project.RASTER_KINDS.items()},
+        "register_only": sorted(project.REGISTER_ONLY),
+    }
+
+
+@router.post("/project")
+def create_project(req: ProjectCreateRequest) -> dict[str, Any]:
+    """Build a project GeoPackage from the operator's own files, then import it.
+
+    Creation and ingest are one call because a project that exists but holds no units is
+    not a state worth exposing - the wizard would have to make a second call to reach a
+    usable project, and a failure between the two leaves a file that looks like a project
+    and answers every query with nothing.
+    """
+    from .extrude.building import EstimatorMismatch
+    from .loader import settings_from_dict
+
+    unknown = sorted({s.source_type for s in req.sources} - project.SOURCE_TYPES)
+    if unknown:
+        raise HTTPException(422, f"unknown source_type: {', '.join(unknown)}. "
+                                 f"Known: {', '.join(sorted(project.SOURCE_TYPES))}")
+
+    # Refused here rather than at `derive`, which is where `extrude.building` raises it.
+    # By then the operator has already built the project and imported their data, and the
+    # value they need to change is three screens back. `settings_from_dict` does not
+    # check it - it only maps keys - so the guard has to be stated at each door that
+    # accepts the number from a person.
+    if req.default_parapet_deduction_m:
+        raise HTTPException(422, str(EstimatorMismatch(
+            f"default_parapet_deduction_m is {req.default_parapet_deduction_m}, but "
+            "roof_level uses a median estimator that already returns the roof slab. "
+            "Applying the deduction would lower every floor by that amount with nothing "
+            "reporting it. Set it to 0.0.")))
+
+    try:
+        settings = settings_from_dict({
+            "project_crs": req.project_crs,
+            "vertical_datum": req.vertical_datum,
+            "stratum_below_limit_m": req.stratum_below_limit_m,
+            "stratum_above_limit_m": req.stratum_above_limit_m,
+            "default_plinth_offset_m": req.default_plinth_offset_m,
+            "default_parapet_deduction_m": req.default_parapet_deduction_m,
+            "ulpin_version": req.ulpin_version,
+            "ruleset_version": req.ruleset_version,
+        })
+    except Exception as err:                      # EstimatorMismatch and friends
+        raise HTTPException(422, str(err)) from err
+
+    for s in req.sources:
+        if not s.source_id:
+            s.source_id = project.new_source_id(s.source_type)
+
+    try:
+        made = project.create(Path(req.db_path), settings, req.sources)
+    except project.ProjectCreateError as err:
+        raise HTTPException(422, str(err)) from err
+
+    conn = sqlite3.connect(made.db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        init_schema(conn)
+        report = ingest_gpkg.import_project(conn, load_project(conn)[3])
+        return {
+            "db_path": made.db_path,
+            "sources": made.sources,
+            "layers": made.layers,
+            "rasters": made.rasters,
+            "registered_only": made.registered_only,
+            "units": len(report.units),
+            "relationships": len(report.relationships),
+            "provisional_ulpins": report.minted,
+            "unresolved_buildings": report.unresolved,
+        }
+    except (ingest_gpkg.LayerMissing, ProjectIncomplete) as err:
+        raise HTTPException(422, str(err)) from err
     finally:
         conn.close()

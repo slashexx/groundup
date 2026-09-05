@@ -8,13 +8,33 @@
  * Everything here is read-only except `transition` and `acknowledge`, which are the two
  * actions a reviewer takes. Contract shapes come from `contracts/outbound/*.schema.json`.
  *
- * When the sidecar is not running, callers fall back to the mock data this app shipped
- * with and SAY SO in the UI. A screen that silently shows invented numbers as though
- * they were the project is worse than one that shows nothing.
+ * When the sidecar is not running, callers get nothing and the UI SAYS SO. There is no
+ * sample data to fall back to any more — a screen that silently shows invented numbers
+ * as though they were the project is worse than one that shows nothing, and the fallback
+ * was how it happened.
  */
 
 const BASE = import.meta.env.VITE_CADASTRE_API ?? 'http://127.0.0.1:8000'
-const DB = import.meta.env.VITE_CADASTRE_DB ?? 'pilot.gpkg'
+
+/** The project every call reads, set once when the wizard creates one.
+ *
+ *  Module state rather than a parameter on each call: the alternative threads a path
+ *  through every screen, and the first one that forgets reads a *different project* while
+ *  claiming to show this one. There is exactly one open project per window, so there is
+ *  exactly one of these.
+ *
+ *  It starts empty on purpose. Before a project exists there is nothing to read, and a
+ *  default of `pilot.gpkg` would quietly serve the demo fixture to a fresh install — the
+ *  screen would look right and belong to somebody else's data. */
+let DB = import.meta.env.VITE_CADASTRE_DB ?? ''
+
+export function setProjectPath(path) {
+  DB = path
+}
+
+export function projectPath() {
+  return DB
+}
 
 export class SidecarUnavailable extends Error {}
 
@@ -80,6 +100,22 @@ export const cadastre = {
     }),
 
   resolveUlpin: (ulpin) => request(`/cadastre/ulpin/${encodeURIComponent(ulpin)}`),
+
+  /** What a project may be built from. Served by the sidecar rather than hardcoded here,
+   *  so the wizard's form and `project.py` cannot drift: a type this form offers but the
+   *  module does not handle is a file the operator picks and the project silently drops. */
+  sourceTypes: () => request('/cadastre/source-types'),
+
+  /** Build a project GeoPackage from the operator's own files, and import it.
+   *
+   *  Sources are named by path, not uploaded: the sidecar runs on this machine, which is
+   *  the whole point of the desktop-first design. A LiDAR tile is read where it lies.
+   *
+   *  `horizontal_accuracy_m` and `vertical_accuracy_m` are mandatory per source and the
+   *  sidecar refuses the call without them — every validation tolerance is derived from
+   *  those two numbers, so a default would make each source claim survey grade. */
+  createProject: (payload) =>
+    request('/cadastre/project', { method: 'POST', body: payload, params: { db_path: null } }),
 }
 
 // --- shaping the contract for these screens ------------------------------------------
@@ -104,8 +140,8 @@ export function findingsToRows(doc) {
     category: f.rule_id,
     description: f.message,
     parcel: f.unit_id,
-    // The rule's own severity is the severity. The mock invented a second axis
-    // (Critical/High/Medium/Low) that nothing in the contract produces.
+    // The rule's own severity is the severity. A second axis (Critical/High/Medium/Low)
+    // was rendered here once; nothing in the contract produces one.
     severity: f.severity === 'error' ? 'Error' : f.severity === 'warning' ? 'Warning' : 'Info',
     acknowledgedBy: f.acknowledged_by,
     measured: f.measured_value,

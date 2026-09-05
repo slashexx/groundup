@@ -1,6 +1,5 @@
 import { useMemo, useState } from 'react';
 import { Icons } from '../components/Icons';
-import { mockErrorChecks } from '../data/mockData';
 import { cadastre, findingsToRows } from '../data/cadastreApi';
 import { DataSourceBanner, useCadastreDocument } from '../data/useCadastre';
 
@@ -11,7 +10,9 @@ export default function ErrorCheckPage() {
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState(null);
 
-  const errors = useMemo(() => (live && doc ? findingsToRows(doc) : mockErrorChecks), [live, doc]);
+  // No fallback. An empty list here means validation has not run over this project;
+  // inventing rows would put findings on screen that belong to no unit anyone owns.
+  const errors = useMemo(() => (live && doc ? findingsToRows(doc) : []), [live, doc]);
 
   const filtered = filter === 'all' ? errors : errors.filter(e => e.type === filter);
   const errorCount = errors.filter(e => e.type === 'error').length;

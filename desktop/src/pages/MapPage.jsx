@@ -3,7 +3,13 @@ import { useNavigate } from 'react-router-dom';
 import { MapContainer, TileLayer, Polygon, Popup, Marker, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import { Icons } from '../components/Icons';
-import { mockLayers, mockParcels, mockBuildings, mockSelectedProperty } from '../data/mockData';
+import { MAP_LAYERS } from '../data/layers';
+
+// The 2D/3D scene draws the project's own parcels and buildings once the map is
+// wired to the document. Hardcoded shapes lived here before, and they rendered a
+// ward that does not exist over whatever project was open.
+const PARCELS = [];
+const PARCEL_BUILDINGS = [];
 
 /* Fix default Leaflet icon path issue */
 delete L.Icon.Default.prototype._getIconUrl;
@@ -456,7 +462,7 @@ function FloorSlider({ building, activeFloor, onFloorChange }) {
 export default function MapPage({ project, view = '2d' }) {
   const navigate = useNavigate();
   const [showLayers, setShowLayers] = useState(true);
-  const [layers, setLayers] = useState(mockLayers);
+  const [layers, setLayers] = useState(MAP_LAYERS);
   const [selectedProperty, setSelectedProperty] = useState(null);
   const [selectedBuildingId, setSelectedBuildingId] = useState('B318');
   const [activeFloor, setActiveFloor] = useState(4);
@@ -478,10 +484,11 @@ export default function MapPage({ project, view = '2d' }) {
 
   const handleBuildingClick = (building) => {
     setSelectedBuildingId(building.id);
-    setSelectedProperty(mockSelectedProperty);
+    // Details come from the unit that was actually picked, or the panel stays shut.
+    setSelectedProperty(null);
   };
 
-  const selectedBuildingData = mockBuildings.find(b => b.id === selectedBuildingId);
+  const selectedBuildingData = PARCEL_BUILDINGS.find(b => b.id === selectedBuildingId);
 
   return (
     <>
@@ -522,7 +529,7 @@ export default function MapPage({ project, view = '2d' }) {
                 />
 
                 {/* Parcel polygons */}
-                {mockParcels.map(parcel => (
+                {PARCELS.map(parcel => (
                   <Polygon
                     key={parcel.id}
                     positions={generateParcelPolygon(parcel.coords, 0.0015)}
@@ -542,7 +549,7 @@ export default function MapPage({ project, view = '2d' }) {
                 ))}
 
                 {/* Building footprints */}
-                {mockBuildings.map(building => (
+                {PARCEL_BUILDINGS.map(building => (
                   <Polygon
                     key={building.id}
                     positions={generateBuildingPolygon(building.coords, 0.0008)}

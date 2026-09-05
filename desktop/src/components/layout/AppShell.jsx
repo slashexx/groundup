@@ -62,7 +62,7 @@ const toolbarGroups = [
 
 const menuBarItems = ['Home', 'View', 'Tools', 'Analysis', 'AI Tools', 'Validation', 'Help'];
 
-export default function AppShell({ children, project, user, onChangeProject, onLogout }) {
+export default function AppShell({ children, project, user, onChangeProject }) {
   const location = useLocation();
   const navigate = useNavigate();
   const [activeTool, setActiveTool] = useState('select');

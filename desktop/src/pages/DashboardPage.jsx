@@ -1,9 +1,5 @@
 import { Icons } from '../components/Icons';
 import { useNavigate } from 'react-router-dom';
-import {
-  mockDashboardKPIs, mockUploadStatus, mockJobs, mockErrors,
-  mockRecordsByStatus, mockHistory
-} from '../data/mockData';
 import { dashboardCounts } from '../data/cadastreApi';
 import { DataSourceBanner, useCadastreDocument } from '../data/useCadastre';
 
@@ -121,18 +117,11 @@ export default function DashboardPage({ project }) {
       Replaced: 0,
       Closed: 0,
     }
-    : {
-      Draft: mockRecordsByStatus.draft,
-      Processing: mockRecordsByStatus.processing,
-      'Needs Review': mockRecordsByStatus.needsReview,
-      Approved: mockRecordsByStatus.approved,
-      Replaced: mockRecordsByStatus.replaced,
-      Closed: mockRecordsByStatus.closed,
-    };
+    : { Draft: 0, Processing: 0, 'Needs Review': 0, Approved: 0, Replaced: 0, Closed: 0 };
 
   // Counted from the project document rather than written into the source. The last
-  // tile has no mock equivalent: it is FR-03 made visible — units whose height is
-  // genuinely unknown, which the system records as absent instead of guessing.
+  // tile is FR-03 made visible: units whose height is genuinely unknown, which the
+  // system records as absent instead of guessing.
   const kpis = counts
     ? [
       { label: 'Land Parcels', value: String(counts.parcels) },
@@ -143,7 +132,7 @@ export default function DashboardPage({ project }) {
       { label: 'Errors / Warnings', value: `${counts.errors} / ${counts.warnings}` },
       { label: 'Height Unknown', value: String(counts.unknownHeight) },
     ]
-    : mockDashboardKPIs;
+    : null;   // no document, no numbers — see the banner above the tiles
 
   // Errors first — the alert list is triage, and a warning above an error is noise.
   const recentAlerts = live && doc
@@ -159,7 +148,14 @@ export default function DashboardPage({ project }) {
         acknowledged: f.acknowledged_by,
         detected: f.detected_at?.replace('T', ' ').slice(0, 16) ?? '—',
       }))
-    : mockErrors.recent.map(e => ({ ...e, acknowledged: null, detected: '29 May 2025, 09:45 AM' }));
+    : [];
+
+  // Neither has a route on the sidecar yet: there is no job queue and no audit log to
+  // read. Empty is the truthful rendering. Filling these with plausible rows was how the
+  // dashboard came to report AI runs that never happened and edits by people who had
+  // never opened the project.
+  const jobs = [];
+  const recentActivity = [];
 
   const statusClass = (s) => {
     const map = { Completed: 'completed', 'In Progress': 'in-progress', Queued: 'queued' };
@@ -172,7 +168,7 @@ export default function DashboardPage({ project }) {
 
       {/* KPI Cards */}
       <div className="dashboard-kpis">
-        {kpis.map((kpi, i) => {
+        {(kpis ?? []).map((kpi, i) => {
           return (
             <div className="kpi-card" key={i}>
               <div className="kpi-value">{kpi.value}</div>
@@ -201,7 +197,7 @@ export default function DashboardPage({ project }) {
               </tr>
             </thead>
             <tbody>
-              {mockJobs.map((job, i) => (
+              {jobs.map((job, i) => (
                 <tr key={i}>
                   <td style={{ color: 'var(--text-primary)' }}>{job.name}</td>
                   <td>{job.type}</td>
@@ -265,7 +261,7 @@ export default function DashboardPage({ project }) {
               </tr>
             </thead>
             <tbody>
-              {mockHistory.slice(0, 4).map((item, i) => (
+              {recentActivity.slice(0, 4).map((item, i) => (
                 <tr key={i}>
                   <td style={{ color: 'var(--text-primary)' }}>{item.text}</td>
                   <td style={{ textTransform: 'capitalize' }}>{item.type}</td>

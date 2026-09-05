@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { Icons } from '../components/Icons';
-import { mockFullHistory } from '../data/mockData';
 
 const typeColors = {
   upload: { bg: 'var(--accent-secondary-dim)', color: 'var(--accent-secondary)', icon: Icons.Upload },
@@ -20,7 +19,13 @@ export default function HistoryPage() {
   const [filter, setFilter] = useState('All');
   const [searchQuery, setSearchQuery] = useState('');
 
-  const filtered = mockFullHistory.filter(item => {
+  // The sidecar has no history route yet, so there is nothing to list. A page of
+  // plausible entries — who uploaded what, who approved which unit — is the most
+  // quietly misleading thing this app could show, because an audit trail is read as
+  // evidence.
+  const HISTORY = [];
+
+  const filtered = HISTORY.filter(item => {
     if (filter !== 'All' && item.type !== filter) return false;
     if (searchQuery && !item.text.toLowerCase().includes(searchQuery.toLowerCase()) &&
         !item.user.toLowerCase().includes(searchQuery.toLowerCase())) return false;
@@ -53,7 +58,7 @@ export default function HistoryPage() {
         {filterTypes.map(f => (
           <button key={f} className={`search-filter-chip ${filter === f ? 'active' : ''}`}
             onClick={() => setFilter(f)}>
-            {f === 'All' ? `All (${mockFullHistory.length})` : f.charAt(0).toUpperCase() + f.slice(1)}
+            {f === 'All' ? `All (${HISTORY.length})` : f.charAt(0).toUpperCase() + f.slice(1)}
           </button>
         ))}
       </div>

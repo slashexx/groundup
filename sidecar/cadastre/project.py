@@ -1,0 +1,173 @@
+"""Create a project from the operator's own data — the wizard's backend.
+
+Everything else in this block consumes a GeoPackage that already exists. Something has
+to make one, and until now that was `tools/run_chain.py` over P2's sample files: fine for
+a rehearsal, useless to an operator with a ward of their own. This is the same sequence
+the chain runs, reachable from P1.
+
+**Source accuracy is required, not defaulted.** `contracts/inbound/p2-geopackage.md` is
+explicit that `horizontal_accuracy_m` and `vertical_accuracy_m` drive every geometric
+tolerance P4 computes (`tol = k * sqrt(acc_a^2 + acc_b^2)`), and that a writer supplying
+an optimistic default makes every source silently claim survey grade. P2's
+`process_file` does default them to 0.20/0.25 m. We refuse instead: pydantic marks both
+mandatory, so a caller that omits them gets a 422 naming the field rather than a project
+whose tolerances are fiction. Under-claiming accuracy is safe; over-claiming fills the
+review queue with false positives until reviewers stop reading it.
+
+`default_parapet_deduction_m` is likewise refused if non-zero — the roof estimator is a
+median and returns the slab directly, so a deduction on top lowers every floor and
+*every validation rule still passes*. `extrude.building` raises `EstimatorMismatch` on
+it, but only at derive time; the API route repeats the check at creation so the operator
+hears it while the field is still in front of them. `loader.settings_from_dict` does not
+check it and never did — it maps keys and nothing more.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+import sys
+import uuid
+from dataclasses import dataclass, field
+from pathlib import Path
+
+#: P2 lives beside us in the sidecar, not on PyPI.
+_INGEST = Path(__file__).resolve().parents[1] / "ingest"
+if str(_INGEST) not in sys.path:
+    sys.path.insert(0, str(_INGEST))
+
+#: Vector source types and the contract layer each one lands in. A source type absent
+#: here carries no geometry P4 can read as a unit (imagery, point clouds, survey
+#: control) and is registered as provenance only - see `REGISTER_ONLY`.
+VECTOR_LAYERS = {
+    "parcel_map": "parcel",
+    "footprint": "building_footprint",
+    "utility": "utility_line",
+}
+
+#: Raster source types and their `raster.kind`. These are registered, not harmonized:
+#: `derive` reads them off disk when it needs ground and roof levels.
+RASTER_KINDS = {"dem": "DEM", "dsm": "DSM", "ortho": "ORTHO"}
+
+#: Accepted but geometry-free: recorded in `source` so a unit built from them can name
+#: its provenance, with nothing for P2 to reproject. `pointcloud` is here rather than in
+#: RASTER_KINDS because a LAS/LAZ tile is not a raster and P4 reads a DEM/DSM derived
+#: from it, never the tile itself.
+REGISTER_ONLY = {"pointcloud", "floorplan", "survey_control"}
+
+SOURCE_TYPES = set(VECTOR_LAYERS) | set(RASTER_KINDS) | REGISTER_ONLY
+
+
+class ProjectCreateError(Exception):
+    """The project could not be built. Carries a message meant for the operator."""
+
+
+@dataclass
+class CreatedProject:
+    db_path: str
+    sources: list[str] = field(default_factory=list)
+    layers: list[str] = field(default_factory=list)
+    rasters: list[str] = field(default_factory=list)
+    registered_only: list[str] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
+
+
+def _register_source(conn: sqlite3.Connection, s, coverage_wkt: str = "") -> None:
+    """Write one row of the `source` registry — the table P4's tolerances come from."""
+    conn.execute(
+        "INSERT OR REPLACE INTO source (source_id, source_type, name, provider, "
+        "capture_date, crs, vertical_datum, horizontal_accuracy_m, vertical_accuracy_m, "
+        "coverage_wkt, processing_status) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (s.source_id, s.source_type, s.name, s.provider, s.capture_date, s.crs,
+         s.vertical_datum, s.horizontal_accuracy_m, s.vertical_accuracy_m,
+         coverage_wkt, s.processing_status),
+    )
+
+
+def create(gpkg: Path, settings, sources: list) -> CreatedProject:
+    """Build a project GeoPackage from `settings` and the operator's `sources`.
+
+    Vector sources go through P2's harmonizer so everything lands in the project CRS in
+    metres. Rasters and geometry-free sources are registered where they sit; copying a
+    12 GB point cloud into the project folder to satisfy tidiness is not worth the wait,
+    and `raster.path` exists precisely to point at one.
+    """
+    from run_pipeline import GeoDataPipeline  # P2, resolved via sys.path above
+
+    if not sources:
+        raise ProjectCreateError(
+            "a project needs at least one source. Add a parcel map to begin: it is the "
+            "only layer that carries the parent ULPIN every other unit inherits.")
+
+    missing = [s.path for s in sources if not Path(s.path).exists()]
+    if missing:
+        raise ProjectCreateError("file not found: " + ", ".join(missing))
+
+    gpkg.parent.mkdir(parents=True, exist_ok=True)
+    gpkg.unlink(missing_ok=True)
+
+    pipeline = GeoDataPipeline(gpkg_output_path=str(gpkg), target_crs=settings.project_crs)
+    pipeline.setup_project()
+    out = CreatedProject(db_path=str(gpkg))
+
+    # Vectors first: the GeoPackage does not exist as a file until a layer is written,
+    # and `ensure_contract_tables` returns early on a path that is not there yet.
+    for s in (x for x in sources if x.source_type in VECTOR_LAYERS):
+        layer = VECTOR_LAYERS[s.source_type]
+        ok = pipeline.process_file(
+            s.path, layer, s.source_id, s.source_type,
+            source_name=s.name,
+            horizontal_accuracy_m=s.horizontal_accuracy_m,
+            vertical_accuracy_m=s.vertical_accuracy_m,
+        )
+        if not ok:
+            raise ProjectCreateError(
+                f"P2 could not read {Path(s.path).name} as a {layer} layer. Check that it "
+                "is a vector file with a CRS its driver can report.")
+        out.sources.append(s.source_id)
+        out.layers.append(layer)
+
+    if not gpkg.exists():
+        raise ProjectCreateError(
+            "no vector layer was written, so there is no project file. At least one "
+            "parcel map or building footprint source is required; rasters and floor "
+            "plans are registered against a project, they cannot create one.")
+
+    conn = sqlite3.connect(gpkg)
+    try:
+        # P2 stamps its own defaults when it writes the first layer; the operator's
+        # settings are what the project actually runs on, so they are written last.
+        conn.execute(
+            "INSERT OR REPLACE INTO project_settings (id, project_crs, vertical_datum, "
+            "stratum_below_limit_m, stratum_above_limit_m, default_plinth_offset_m, "
+            "default_parapet_deduction_m, ulpin_version, ruleset_version) "
+            "VALUES (1,?,?,?,?,?,?,?,?)",
+            (settings.project_crs, settings.vertical_datum,
+             settings.stratum_below_limit_m, settings.stratum_above_limit_m,
+             settings.default_plinth_offset_m, settings.default_parapet_deduction_m,
+             settings.ulpin_version, settings.ruleset_version))
+
+        for s in sources:
+            if s.source_type in VECTOR_LAYERS:
+                continue
+            _register_source(conn, s)
+            out.sources.append(s.source_id)
+            if s.source_type in RASTER_KINDS:
+                conn.execute(
+                    "INSERT OR REPLACE INTO raster (raster_id, kind, path, crs, "
+                    "vertical_datum, resolution_m, source_id) VALUES (?,?,?,?,?,?,?)",
+                    (f"RST-{s.source_id}", RASTER_KINDS[s.source_type], s.path, s.crs,
+                     s.vertical_datum, s.resolution_m or s.horizontal_accuracy_m,
+                     s.source_id))
+                out.rasters.append(s.source_id)
+            else:
+                out.registered_only.append(s.source_id)
+        conn.commit()
+    finally:
+        conn.close()
+
+    return out
+
+
+def new_source_id(source_type: str) -> str:
+    """A readable, unique source id. Readable because it shows up in every finding."""
+    return f"SRC-{source_type.upper().replace('_', '-')}-{uuid.uuid4().hex[:6]}"

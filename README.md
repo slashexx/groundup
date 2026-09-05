@@ -142,20 +142,83 @@ recognises.
 
 ---
 
-## Getting started
+## Running the whole system
+
+One venv for the three Python blocks, one install per JavaScript block. Then five
+terminals, in this order.
+
+**Check it is green** — about twenty seconds:
 
 ```bash
-python3 sidecar/cadastre/tools/make_fixture.py    # regenerate the demo fixture
-python3 sidecar/cadastre/tools/run_chain.py       # run the whole chain over the sample data
-pytest sidecar/cadastre/tests
-python3 sidecar/cadastre/tools/mutation_check.py  # every guard must be load-bearing
-ruff check sidecar/cadastre
+./.venv/bin/python -m pytest sidecar/cadastre/tests sidecar/ingest/tests sidecar/ai/tests -q
+./.venv/bin/python sidecar/cadastre/tools/mutation_check.py
+./.venv/bin/ruff check sidecar/cadastre
+cd web && pnpm test && cd ..
 ```
 
-The fixture at `contracts/fixtures/demo-parcel.json` is a complete scenario —
-16 units across one parcel and its neighbour, with defects planted for every severity plus
-two **negative tests** recording findings that must *not* fire. Downstream blocks build
-against it before our real code exists.
+Expect `169 passed`, `all 53 mutations caught`, `All checks passed!`, `pass 10`.
+
+**1 · Build the project.** Under three seconds, and the terminal is free afterwards:
+
+```bash
+./.venv/bin/python sidecar/cadastre/tools/run_chain.py
+```
+
+Ends at `7 units: 0 findings - clean`, with one AI suggestion still pending. Leave it
+pending — a person accepting it is the thing worth showing, and `--accept-ai-as NAME`
+only exists so an unattended run has somebody's name against the record.
+
+**2 · The sidecar** — P4 over HTTP, which is what P1 reads and what P6 publishes from.
+Leave it running:
+
+```bash
+./.venv/bin/python -m uvicorn cadastre.app:app --app-dir sidecar --port 8000
+```
+
+**3 · P1, the review desktop** → **http://localhost:1420**
+
+```bash
+cd desktop && npm run dev
+```
+
+**4 · P6, the published site** → **http://localhost:4173**
+
+```bash
+cd web && pnpm publish:fixture && pnpm preview
+```
+
+**5 · P5, the viewer components** on their own, if they are being shown separately →
+**http://localhost:5173**
+
+```bash
+cd viewer && pnpm dev
+```
+
+Stop everything with `pkill -f uvicorn; pkill -f vite`.
+
+Three things that are not obvious and each cost an afternoon:
+
+- **Open `localhost`, never `127.0.0.1`.** Vite binds `[::1]` alone, so the IPv4 spelling
+  connects to nothing. The sidecar answers on both, which makes `localhost` the one
+  spelling that works for every service here.
+- **The port numbers are not arbitrary.** `:1420` and `:5173` are the only origins in the
+  sidecar's CORS list. P1 on any other port falls back to its mock data and says so —
+  correct behaviour that looks precisely like a broken demo.
+- **Publish the fixture, not the live run.** `publish:fixture` is 16 units and 5 findings
+  across two parcels; the chain over P2's sample data is 7 units and clean. The two paths
+  are deliberately interchangeable, which is the point of the contract — but only one of
+  them fills a screen.
+
+That fixture, `contracts/fixtures/demo-parcel.json`, is a complete scenario: 16 units
+across one parcel and its neighbour, defects planted for every severity, and three
+**negative tests** recording findings that must *not* fire. Downstream blocks built
+against it before our real code existed. Regenerate it with
+`python3 sidecar/cadastre/tools/make_fixture.py` — the generator is the source and the
+JSON is output, and CI fails if the committed file disagrees.
+
+P1 also packages as a native Tauri app (`npm run tauri dev`), which needs a Rust
+toolchain; without `cargo` it runs as a browser app on the same port, wired to the same
+sidecar.
 
 ---
 

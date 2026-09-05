@@ -1,25 +1,24 @@
 import { useState } from 'react';
 import { Icons } from '../components/Icons';
-import { mockSearchResults } from '../data/mockData';
 import { UNIT_TYPE_LABELS, searchRows } from '../data/cadastreApi';
 import { DataSourceBanner, useCadastreDocument } from '../data/useCadastre';
 
 // Live, the types are the six the contract defines — not a free-text list.
 const LIVE_TYPES = ['All Types', ...Object.values(UNIT_TYPE_LABELS)];
 const LIVE_STATUSES = ['All Status', 'draft', 'processing', 'needs_review', 'approved', 'replaced', 'closed'];
-const MOCK_TYPES = ['All Types', 'Apartment', 'Commercial', 'Residential', 'Office', 'Parking', 'Underground'];
-const MOCK_STATUSES = ['All Status', 'Approved', 'Draft', 'Processing', 'Needs Review'];
 
 export default function SearchPage() {
   const { doc, live, status: loadStatus, error: loadError, reload } = useCadastreDocument();
   const [query, setQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState('All Types');
   const [statusFilter, setStatusFilter] = useState('All Status');
-  const [results, setResults] = useState(mockSearchResults);
+  const [results, setResults] = useState([]);
   const [searched, setSearched] = useState(false);
 
-  const filterOptions = live ? LIVE_TYPES : MOCK_TYPES;
-  const statusFilters = live ? LIVE_STATUSES : MOCK_STATUSES;
+  // The filters name the unit types and statuses this system actually has, not a
+  // second vocabulary for when it is offline.
+  const filterOptions = LIVE_TYPES;
+  const statusFilters = LIVE_STATUSES;
 
   const handleSearch = () => {
     setSearched(true);
@@ -39,12 +38,9 @@ export default function SearchPage() {
       })));
       return;
     }
-    setResults(query
-      ? mockSearchResults.filter(r =>
-        r.ulpin.toLowerCase().includes(query.toLowerCase()) ||
-        r.building.toLowerCase().includes(query.toLowerCase()) ||
-        r.address.toLowerCase().includes(query.toLowerCase()))
-      : mockSearchResults);
+    // Nothing to search when the sidecar is not answering. An empty result is the
+    // honest answer; a filtered list of invented ULPINs is not.
+    setResults([]);
   };
 
   const filtered = results.filter(r => {

@@ -24,6 +24,32 @@ REPO = PKG.parents[1]
 
 #: (file, snippet to remove or replace, replacement, what it should catch)
 MUTATIONS: list[tuple[str, str, str, str]] = [
+    # --- the project wizard's backend. A wrong setting here is not caught downstream,
+    # it is inherited downstream by every unit the project will ever hold.
+    ("api.py",
+     "    if req.default_parapet_deduction_m:",
+     "    if False:",
+     "a parapet deduction accepted at creation, to surface only at derive"),
+    ("api.py",
+     "    horizontal_accuracy_m: float = Field(..., gt=0)",
+     "    horizontal_accuracy_m: float = 0.20",
+     "a source defaulting to survey-grade horizontal accuracy it never claimed"),
+    ("api.py",
+     "    vertical_accuracy_m: float = Field(..., gt=0)",
+     "    vertical_accuracy_m: float = 0.25",
+     "a source defaulting to survey-grade vertical accuracy it never claimed"),
+    ("api.py",
+     "    unknown = sorted({s.source_type for s in req.sources} - project.SOURCE_TYPES)",
+     "    unknown = []",
+     "a source type the form offers and the project silently drops"),
+    ("project.py",
+     "    if not gpkg.exists():",
+     "    if False:",
+     "a raster alone accepted as enough to start a project"),
+    ("project.py",
+     "    missing = [s.path for s in sources if not Path(s.path).exists()]",
+     "    missing = []",
+     "a project half-built around a file that was never there"),
     ("validate/rules/_util.py",
      "return max(a.lower_limit, b.lower_limit) < min(a.upper_limit, b.upper_limit) - tol_v",
      "return max(a.lower_limit, b.lower_limit) <= min(a.upper_limit, b.upper_limit) + tol_v",
@@ -222,8 +248,8 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     # --- the API reference, which drifted to 3 routes out of 15 once already ---------
     ("README.md", "#### `GET /cadastre/document`", "#### `GET /cadastre/documentt`",
      "a route the reference stops describing"),
-    ("README.md", "Fifteen operations across fourteen paths",
-     "Sixteen operations across fourteen paths",
+    ("README.md", "Seventeen operations across sixteen paths",
+     "Sixteen operations across sixteen paths",
      "a count in the reference that no longer matches the router"),
     ("store.py",
      ("    covered = (\n"
