@@ -1,7 +1,11 @@
 import { useEffect, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { Icons } from '../components/Icons';
-import { SidecarUnavailable, cadastre } from '../data/cadastreApi';
+import { SidecarUnavailable, cadastre, setProjectPath } from '../data/cadastreApi';
+// Shared with the Upload Data screen. Both add sources to a project, and while each held
+// its own copy of this table the same kind of file was registered at two different
+// accuracies — and every validation tolerance is computed from that number.
+import { SOURCE_KINDS } from '../data/sourceKinds';
 
 /**
  * Create a project from the operator's own data.
@@ -14,74 +18,6 @@ import { SidecarUnavailable, cadastre } from '../data/cadastreApi';
  * `project_settings` step writes that table's single row, and each source writes one row
  * of `source`, which is the table P4 derives every geometric tolerance from.
  */
-
-/** What each source type is called in front of a person, and what it is for.
- *
- *  The keys are the sidecar's `source_type` values, checked against
- *  `GET /cadastre/source-types` on mount — a label here for a type the backend does not
- *  handle is a file the operator picks and the project silently drops.
- *
- *  `accuracy` values are the conservative end of each instrument's usual range, never the
- *  optimistic one. The contract is explicit: under-claiming accuracy is safe, because a
- *  too-tight tolerance turns ordinary measurement noise into reported encroachments and
- *  fills the review queue with false positives until reviewers stop reading it.
- */
-const SOURCE_KINDS = {
-  parcel_map: {
-    label: 'GIS parcel layer',
-    hint: 'Cadastral parcel polygons. The only source that carries the existing 14-character ULPIN every unit inherits.',
-    accept: { name: 'Vector', extensions: ['geojson', 'json', 'gpkg', 'shp'] },
-    accuracy: [0.30, 0.50], datum: 'EGM2008', required: true,
-  },
-  footprint: {
-    label: 'Building footprints',
-    hint: 'Building outlines. Attached to a parcel that holds more than half of each one.',
-    accept: { name: 'Vector', extensions: ['geojson', 'json', 'gpkg', 'shp'] },
-    accuracy: [0.30, 0.50], datum: 'EGM2008',
-  },
-  utility: {
-    label: 'Utility lines — underground or elevated',
-    hint: 'Water, sewer, power, telecom, metro, walkway. Becomes an easement corridor, which is allowed to cross parcel boundaries.',
-    accept: { name: 'Vector', extensions: ['geojson', 'json', 'gpkg', 'shp'] },
-    accuracy: [0.50, 0.50], datum: 'EGM2008',
-  },
-  dem: {
-    label: 'DEM — bare-earth elevation',
-    hint: 'Ground level under the buildings. Without it heights stay absent, which is FR-03 working rather than failing.',
-    accept: { name: 'Raster', extensions: ['tif', 'tiff'] },
-    accuracy: [0.50, 0.30], datum: 'EGM2008',
-  },
-  dsm: {
-    label: 'DSM — surface elevation',
-    hint: 'Roof level. Paired with the DEM to extrude a building and divide it into floors.',
-    accept: { name: 'Raster', extensions: ['tif', 'tiff'] },
-    accuracy: [0.50, 0.30], datum: 'EGM2008',
-  },
-  ortho: {
-    label: 'Drone imagery / orthophoto',
-    hint: 'Basemap and visual evidence for review.',
-    accept: { name: 'Raster', extensions: ['tif', 'tiff', 'jpg', 'png'] },
-    accuracy: [0.10, 0.50], datum: 'EGM2008',
-  },
-  pointcloud: {
-    label: 'LiDAR / 3D point cloud',
-    hint: 'Registered as provenance. The system reads a DEM and DSM derived from it, never the tile itself — so add those too.',
-    accept: { name: 'Point cloud', extensions: ['las', 'laz'] },
-    accuracy: [0.15, 0.10], datum: 'WGS84_ELLIPSOID',
-  },
-  floorplan: {
-    label: 'Building floor plan',
-    hint: 'Provenance for interior subdivision. Floor plans use a local datum: ground floor level is 0.000.',
-    accept: { name: 'Plan', extensions: ['pdf', 'dxf', 'dwg', 'png', 'jpg'] },
-    accuracy: [0.10, 0.10], datum: 'LOCAL_FFL',
-  },
-  survey_control: {
-    label: 'GNSS / CORS survey control',
-    hint: 'Control points the rest of the data is tied to. The most accurate thing in a project, and usually the smallest.',
-    accept: { name: 'Survey', extensions: ['csv', 'txt', 'geojson', 'json'] },
-    accuracy: [0.02, 0.03], datum: 'WGS84_ELLIPSOID',
-  },
-};
 
 /** Projected CRS in metres. P4 does area and distance maths and must not reproject per
  *  operation, so a geographic CRS such as EPSG:4326 is not offered: degrees are not a
@@ -118,6 +54,45 @@ export default function CreateProjectPage({ onCreated }) {
     ruleset_version: 'r1',
   });
   const [sources, setSources] = useState([]);
+
+  /** Opening an existing project. The wizard was the only entrance, which meant a
+   *  project built yesterday could only be reached by building it again over the same
+   *  file - which is how it came to be overwritten. */
+  const [opening, setOpening] = useState(false);
+
+  async function openExisting() {
+    setError(null);
+    let picked;
+    try {
+      picked = await open({
+        multiple: false,
+        filters: [{ name: 'Cadastre project', extensions: ['gpkg'] }],
+      });
+    } catch (e) {
+      // Same fallback the source picker already offers: a dialog that will not open is
+      // not a reason to be unable to open a project.
+      picked = window.prompt(`Could not open the file chooser (${e}). Paste the full path to the .gpkg:`);
+      if (!picked) return;
+    }
+    if (!picked) return;
+    const path = Array.isArray(picked) ? picked[0] : picked;
+    setOpening(true);
+    try {
+      // Ask the sidecar what the file holds before claiming it as the active project. A
+      // path that is not a project is refused here, not discovered three screens later
+      // by a dashboard rendering zeroes.
+      setProjectPath(path);
+      const info = await cadastre.openProject(path);
+      onCreated({ ...info, location: '' });
+    } catch (e) {
+      setProjectPath(null);
+      setError(e instanceof SidecarUnavailable
+        ? 'The cadastre sidecar is not running, so the project cannot be read.'
+        : e.message);
+    } finally {
+      setOpening(false);
+    }
+  }
 
   // Ask the sidecar what it accepts rather than trusting the table above.
   useEffect(() => {
@@ -187,6 +162,20 @@ export default function CreateProjectPage({ onCreated }) {
   const hasVector = sources.some((s) => ['parcel_map', 'footprint', 'utility'].includes(s.source_type));
   const canAdvance = step === 0 ? p.name.trim() && p.db_path.trim() : step === 1 ? hasVector : true;
 
+  // Say what is missing, beside the control that is refusing to move. A disabled button
+  // with no reason beside it is indistinguishable from a broken one.
+  const blocker = (() => {
+    if (canAdvance) return null;
+    if (step === 0) {
+      const need = [];
+      if (!p.name.trim()) need.push('a project name');
+      if (!p.db_path.trim()) need.push('a project file');
+      return `Needs ${need.join(' and ')}.`;
+    }
+    if (step === 1) return 'Needs at least one parcel, footprint or utility layer.';
+    return null;
+  })();
+
   async function chooseDestination() {
     let path;
     try {
@@ -248,6 +237,9 @@ export default function CreateProjectPage({ onCreated }) {
             A project is one ward, village or city block, and everything measured within it.
           </span>
         </div>
+        <button className="btn btn-secondary" onClick={openExisting} disabled={opening}>
+          {opening ? 'Opening…' : 'Open existing project…'}
+        </button>
       </div>
 
       <div className="wizard-steps" style={{ marginBottom: 24 }}>
@@ -295,7 +287,8 @@ export default function CreateProjectPage({ onCreated }) {
 
             <Field label="Project coordinate system"
                    hint="Projected, in metres. Areas and distances are computed directly in it, so degrees are not an option.">
-              <select className="form-select" value={p.project_crs} onChange={set('project_crs')}>
+              <select
+              onWheel={(e) => e.currentTarget.blur()} className="form-select" value={p.project_crs} onChange={set('project_crs')}>
                 {PROJECT_CRS.map(([code, desc]) => (
                   <option key={code} value={code}>{code} — {desc}</option>
                 ))}
@@ -441,9 +434,12 @@ export default function CreateProjectPage({ onCreated }) {
           <button className="btn btn-ghost" onClick={() => setStep(step - 1)} disabled={busy}>Back</button>
         )}
         {step < STEPS.length - 1 ? (
-          <button className="btn btn-primary" disabled={!canAdvance} onClick={() => setStep(step + 1)}>
-            Continue
-          </button>
+          <>
+            {blocker && <span className="wizard-blocker">{blocker}</span>}
+            <button className="btn btn-primary" disabled={!canAdvance} onClick={() => setStep(step + 1)}>
+              Continue
+            </button>
+          </>
         ) : (
           <button className="btn btn-primary" disabled={busy || !hasVector} onClick={create}>
             {busy ? 'Creating…' : 'Create project'}
@@ -509,7 +505,8 @@ function SourceRow({ s, i, spec, onEdit, onDrop }) {
           <input className="form-input" type="date" value={s.capture_date} onChange={edit('capture_date')} />
         </Field>
         <Field label="Type">
-          <select className="form-select" value={s.source_type}
+          <select
+              onWheel={(e) => e.currentTarget.blur()} className="form-select" value={s.source_type}
                   onChange={(e) => onEdit(i, 'source_type', e.target.value)}>
             {Object.entries(SOURCE_KINDS).map(([k, v]) => (
               <option key={k} value={k}>{v.label}</option>
@@ -517,7 +514,8 @@ function SourceRow({ s, i, spec, onEdit, onDrop }) {
           </select>
         </Field>
         <Field label="Source CRS">
-          <select className="form-select" value={s.crs} onChange={edit('crs')}>
+          <select
+              onWheel={(e) => e.currentTarget.blur()} className="form-select" value={s.crs} onChange={edit('crs')}>
             {SOURCE_CRS.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
         </Field>
@@ -534,7 +532,8 @@ function SourceRow({ s, i, spec, onEdit, onDrop }) {
         </Field>
         <Field label="Accuracy is"
                hint="Say which. An estimate recorded as a measurement is the one that misleads.">
-          <select className="form-select" value={s.processing_status} onChange={edit('processing_status')}>
+          <select
+              onWheel={(e) => e.currentTarget.blur()} className="form-select" value={s.processing_status} onChange={edit('processing_status')}>
             <option value="accuracy_estimated">estimated</option>
             <option value="harmonized">measured / from the data sheet</option>
           </select>

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from . import derive, detect, export, ingest_gpkg, project, store, suggestions, validate
@@ -66,15 +67,140 @@ class ProjectCreateRequest(BaseModel):
     """Everything the P1 wizard collects. Mirrors `project_settings` plus the sources."""
 
     db_path: str
-    project_crs: str = "EPSG:32643"
-    vertical_datum: str = "EGM2008"
-    stratum_below_limit_m: float = -30.0
-    stratum_above_limit_m: float = 150.0
-    default_plinth_offset_m: float = 0.6
+    #: Required, with no default. UTM 43N covers India; defaulting to it silently
+    #: reprojected a project in Kenya or Germany into an Indian zone, and every number
+    #: downstream stayed plausible - areas distorted by a factor that grows with distance
+    #: from 75 degrees east, parcels landing in the Bay of Bengal, and no rule able to
+    #: notice, because every unit is stamped with the setting rather than measured
+    #: against it. A CRS is a fact about the operator's data and only they know it.
+    project_crs: str = Field(..., min_length=1)
+    #: Also required. Heights on a local MSL or NAVD88 labelled EGM2008 are wrong by the
+    #: local geoid separation - up to about a hundred metres - while every relative
+    #: relationship between them stays consistent and every rule passes.
+    vertical_datum: str = Field(..., min_length=1)
+    #: The statutory strata a parcel column spans. -30/+150 is an Indian convention, not
+    #: a physical constant, so it is asked for rather than assumed.
+    stratum_below_limit_m: float
+    stratum_above_limit_m: float
+    #: Indian construction sits 0.3-1.0 m above surrounding ground. Elsewhere a
+    #: slab-on-grade building sits at zero, and an assumed 0.6 makes every building in
+    #: the project that much too tall at the base.
+    default_plinth_offset_m: float
     default_parapet_deduction_m: float = 0.0
     ulpin_version: str = "v1"
     ruleset_version: str = "r1"
     sources: list[SourceInput] = []
+
+
+class AddSourcesRequest(BaseModel):
+    """Sources added to a project that already exists.
+
+    No settings here on purpose. The CRS, datum and strata were decided once when the
+    project was created and every unit in it already carries them; letting a later upload
+    restate them would let two halves of one project disagree about where they are.
+    """
+
+    db_path: str
+    sources: list[SourceInput] = []
+    #: Turn the new layers into units straight away. Off means the files are registered
+    #: and the operator ingests when ready.
+    ingest: bool = True
+
+
+@router.post("/sources")
+def add_sources(req: AddSourcesRequest) -> dict[str, Any]:
+    """Append sources to an existing project, then optionally re-ingest.
+
+    Re-ingesting is safe to repeat: units are matched on their source-local id, so a
+    footprint layer added to a project that already holds its parcels keeps those parcels
+    and the identifiers already issued against them.
+    """
+    gpkg = Path(req.db_path)
+    conn = sqlite3.connect(gpkg) if gpkg.exists() else None
+    try:
+        if conn is None:
+            raise HTTPException(404, f"{gpkg} does not exist. Create the project first.")
+        conn.row_factory = sqlite3.Row
+        try:
+            settings = load_project(conn)[3]
+        except store.ProjectIncomplete as err:
+            raise HTTPException(409, str(err)) from err
+    finally:
+        if conn:
+            conn.close()
+
+    for s in req.sources:
+        if not s.source_id:
+            s.source_id = project.new_source_id(s.source_type)
+
+    try:
+        added = project.add_sources(gpkg, settings, req.sources)
+    except project.ProjectCreateError as err:
+        raise HTTPException(422, str(err)) from err
+
+    result: dict[str, Any] = {
+        "db_path": added.db_path, "sources": added.sources, "layers": added.layers,
+        "rasters": added.rasters, "registered_only": added.registered_only,
+    }
+    if not req.ingest:
+        return result
+
+    conn = sqlite3.connect(added.db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        init_schema(conn)
+        report = ingest_gpkg.import_project(conn, load_project(conn)[3])
+        result |= {
+            "units": len(report.units), "created": report.created,
+            "reused": report.reused, "relationships": len(report.relationships),
+            "provisional_ulpins": report.minted,
+            "unresolved_buildings": report.unresolved,
+        }
+        result |= _derive_after_elevation(conn)
+    finally:
+        conn.close()
+    return result
+
+
+def _derive_after_elevation(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Extrude the buildings as soon as the project can measure them.
+
+    Registering a DEM and a DSM over a project of footprints has exactly one consequence
+    the operator wants, and making them go and find it on another screen is the app
+    hiding a required step: the elevation was registered, the ingest reported success,
+    and the 3D view stayed empty with no indication that anything remained to be done.
+
+    Heights only, and no floor units at all. Dividing an envelope into storeys is a guess
+    from an assumed storey height, and even the un-divided single floor is a unit
+    identical to the building containing it - which validation flags, correctly, as a
+    duplicate. Interior subdivision stays behind the explicit Floor segmentation button.
+    """
+    kinds = {
+        str(r["kind"]).upper()
+        for r in conn.execute("SELECT kind FROM raster")
+    } if _has_table(conn, "raster") else set()
+    if not {"DEM", "DSM"} <= kinds:
+        return {}
+    pending = conn.execute(
+        "SELECT count(*) FROM unit WHERE unit_type = 'building' AND lower_limit IS NULL"
+    ).fetchone()[0]
+    if not pending:
+        return {}
+    # Heights, and no floor units. A single floor spanning the whole envelope duplicates
+    # the building it sits in, which validation reports as GEOM_DUPLICATE on every one of
+    # them. How a building is divided is a separate question from how tall it is.
+    report = derive.derive_heights(conn, estimate_floors=False, floors=False)
+    return {
+        "heights_derived": report.heights_derived,
+        "heights_skipped_no_raster": len(report.skipped_no_raster),
+        "heights_skipped_thin_coverage": len(report.skipped_thin_coverage),
+    }
+
+
+def _has_table(conn: sqlite3.Connection, name: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+    ).fetchone() is not None
 
 
 @router.get("/health")
@@ -83,7 +209,7 @@ def health_check() -> dict[str, str]:
 
 
 @router.get("/units/{unit_id}")
-def read_unit(unit_id: str, db_path: str = "pilot.gpkg") -> dict[str, Any]:
+def read_unit(unit_id: str, db_path: str = Query(..., min_length=1)) -> dict[str, Any]:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     unit = get_unit(conn, unit_id)
@@ -107,11 +233,106 @@ def read_unit(unit_id: str, db_path: str = "pilot.gpkg") -> dict[str, Any]:
     }
 
 
+#: Anything shaped like a uuid, so a refusal groups by its cause and not by who hit it.
+_UUID = re.compile(
+    r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")
+
+
+def _cause(err: Exception, *ids: str) -> str:
+    """The reason a refusal happened, with the identities taken out.
+
+    Guards name records in their messages - the one being refused, and often a second one
+    it collides with. Grouping on the raw string therefore groups nothing: 5,971 refusals
+    for one cause came back as 5,971 distinct reasons and a screen rendered every one.
+
+    Both halves are needed. Substituting only the id being acted on leaves the *other*
+    record in, which is the same failure one layer down; stripping only uuids misses an
+    identifier that is not one, and a register is full of those - a parcel's local id, a
+    source id, an ULPIN.
+    """
+    # The acted-on id first, so it reads as "this one" rather than being swallowed by
+    # the uuid pass and made indistinguishable from the record it collided with.
+    reason = str(err)
+    for identifier in ids:
+        if identifier:
+            reason = reason.replace(identifier, "this one")
+    return _UUID.sub("another record", reason)
+
+
+class BulkTransitionRequest(BaseModel):
+    db_path: str
+    target_status: str
+    actor: str
+    comment: str | None = None
+    #: Which units to act on. Omitted means every unit currently in `needs_review`,
+    #: which is what "approve everything I have looked at" means on the review screen.
+    unit_ids: list[str] | None = None
+
+
+@router.post("/units/transition")
+def transition_units(req: BulkTransitionRequest) -> dict[str, Any]:
+    """Move many units at once, and say per unit what happened.
+
+    Approving a ward one unit at a time is not review, it is data entry: a project of
+    5,949 units needs 5,949 clicks, so the screen offered no way to finish and the only
+    realistic path was to stop caring. But a bulk approve that reports a single number
+    is worse than none - the guard in `lifecycle.transition` refuses individual units
+    for individual reasons (unvalidated, outstanding errors, no parent parcel), and a
+    summary saying "4,812 approved" silently buries the 1,137 that were refused.
+
+    So every unit is attempted independently and every refusal is returned with the
+    reason the guard gave. Nothing is rolled back on a refusal: the units that were
+    approvable are approved, which is the outcome the reviewer asked for.
+    """
+    conn = sqlite3.connect(req.db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        if req.unit_ids is None:
+            ids = [r["unit_id"] for r in conn.execute(
+                "SELECT unit_id FROM unit WHERE status = 'needs_review'")]
+        else:
+            ids = list(req.unit_ids)
+
+        approved: list[dict[str, Any]] = []
+        refused: list[dict[str, Any]] = []
+        for unit_id in ids:
+            unit = get_unit(conn, unit_id)
+            if unit is None:
+                refused.append({"unit_id": unit_id, "reason": "no such unit"})
+                continue
+            try:
+                lifecycle.transition(conn=conn, unit=unit, target=req.target_status,
+                                     actor=req.actor, comment=req.comment)
+            except (lifecycle.TransitionError, ledger.UnknownParcel,
+                    ledger.AlreadyIssued) as err:
+                refused.append({"unit_id": unit_id, "reason": _cause(err, unit_id)})
+                continue
+            save_unit(conn, unit)
+            approved.append({"unit_id": unit_id, "status": unit.status.value,
+                             "ulpin": unit.ulpin})
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Refusals are grouped so a reviewer reads "1,137 have outstanding errors" rather
+    # than scrolling 1,137 identical sentences.
+    by_reason: dict[str, int] = {}
+    for r in refused:
+        by_reason[r["reason"]] = by_reason.get(r["reason"], 0) + 1
+    return {
+        "attempted": len(ids),
+        "approved": len(approved),
+        "refused": len(refused),
+        "refused_by_reason": dict(sorted(by_reason.items(), key=lambda kv: -kv[1])),
+        "units": approved,
+    }
+
+
 @router.post("/units/{unit_id}/transition")
 def transition_unit_status(
     unit_id: str,
     req: TransitionRequest,
-    db_path: str = "pilot.gpkg",
+    db_path: str = Query(..., min_length=1),
 ) -> dict[str, Any]:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -184,7 +405,7 @@ def run_validation(req: ValidationRequest) -> dict[str, Any]:
 
 
 @router.get("/runs/latest")
-def latest_run(db_path: str = "pilot.gpkg") -> dict[str, Any]:
+def latest_run(db_path: str = Query(..., min_length=1)) -> dict[str, Any]:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
@@ -199,7 +420,7 @@ def latest_run(db_path: str = "pilot.gpkg") -> dict[str, Any]:
 
 @router.post("/findings/{finding_id}/acknowledge")
 def acknowledge(finding_id: str, req: AcknowledgeRequest,
-                db_path: str = "pilot.gpkg") -> dict[str, Any]:
+                db_path: str = Query(..., min_length=1)) -> dict[str, Any]:
     """Record that a reviewer accepts a warning. Errors are not acknowledgeable."""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -215,7 +436,7 @@ def acknowledge(finding_id: str, req: AcknowledgeRequest,
 
 
 @router.get("/ulpin/{ulpin}")
-def lookup_ulpin(ulpin: str, db_path: str = "pilot.gpkg") -> dict[str, Any]:
+def lookup_ulpin(ulpin: str, db_path: str = Query(..., min_length=1)) -> dict[str, Any]:
     """Resolve an identifier, including one that has been replaced or closed.
 
     A closed unit still answers - the identifier is retained forever and never reissued,
@@ -276,8 +497,28 @@ def ingest_geopackage(req: ValidationRequest) -> dict[str, Any]:
         conn.close()
 
 
+#: Columns of the source registry a consumer needs to explain a number it is shown.
+_SOURCE_COLUMNS = ("source_id", "source_type", "name", "provider", "capture_date",
+                   "crs", "vertical_datum", "horizontal_accuracy_m",
+                   "vertical_accuracy_m", "processing_status")
+
+
+def _source_registry(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Every registered source, so a unit's accuracy can be shown next to the unit.
+
+    `load_project` reduces this table to source_id -> Accuracy because that is all
+    validation needs. A screen showing a person why a 0.42 m tolerance was applied needs
+    the rest of the row: which file, whose survey, and when it was captured.
+    """
+    try:
+        rows = conn.execute(f"SELECT {', '.join(_SOURCE_COLUMNS)} FROM source").fetchall()
+    except sqlite3.OperationalError:
+        return []                       # no registry yet; the units say so themselves
+    return [{c: r[c] for c in _SOURCE_COLUMNS} for r in rows]
+
+
 @router.get("/document")
-def project_document(db_path: str = "pilot.gpkg") -> dict[str, Any]:
+def project_document(db_path: str = Query(..., min_length=1)) -> dict[str, Any]:
     """The whole project in the outbound contract shape, findings included.
 
     This is what P5's `fromP4Document()` already knows how to read, so pointing the
@@ -289,7 +530,8 @@ def project_document(db_path: str = "pilot.gpkg") -> dict[str, Any]:
     try:
         units, rels, _sources, settings = load_project(conn)
         run = load_latest_run(conn)
-        return export.document(settings, units, rels, run.findings if run else [])
+        return export.document(settings, units, rels, run.findings if run else [],
+                               sources=_source_registry(conn))
     except ProjectIncomplete as err:
         raise HTTPException(422, str(err)) from err
     finally:
@@ -360,7 +602,7 @@ def receive_suggestions(req: SuggestionBatch) -> dict[str, Any]:
 
 
 @router.get("/suggestions")
-def list_suggestions(db_path: str = "pilot.gpkg",
+def list_suggestions(db_path: str = Query(..., min_length=1),
                      state: str | None = None) -> dict[str, Any]:
     """The review queue. `state=pending` is what a reviewer opens."""
     conn = sqlite3.connect(db_path)
@@ -374,7 +616,7 @@ def list_suggestions(db_path: str = "pilot.gpkg",
 
 @router.post("/suggestions/{suggestion_id}/review")
 def review_suggestion(suggestion_id: str, req: ReviewRequest,
-                      db_path: str = "pilot.gpkg") -> dict[str, Any]:
+                      db_path: str = Query(..., min_length=1)) -> dict[str, Any]:
     """Accept, edit or reject one suggestion. The decision carries a name."""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -389,6 +631,67 @@ def review_suggestion(suggestion_id: str, req: ReviewRequest,
         raise HTTPException(400, str(err)) from err
     finally:
         conn.close()
+
+
+class BulkReviewRequest(BaseModel):
+    db_path: str
+    state: str
+    actor: str
+    #: Which suggestions to decide. Omitted means every one still pending - the queue as
+    #: it stands, not including anything a person has already ruled on.
+    suggestion_ids: list[str] | None = None
+
+
+@router.post("/suggestions/review")
+def review_suggestions(req: BulkReviewRequest) -> dict[str, Any]:
+    """Decide many suggestions at once, and say per suggestion what happened.
+
+    P3 returns 727 detections over a ward. Ruling on them one at a time is not review,
+    and a screen offering only that offers no way to finish - the operator either stops
+    or clicks until they stop reading, which is worse than not reviewing at all.
+
+    This is deliberately not a shortcut past FR-05: the decision still carries a name and
+    a state, each suggestion goes through the same `suggestions.review`, and nothing
+    becomes a unit until `apply` is called separately. What it removes is the clicking,
+    not the step.
+
+    A suggestion already applied is refused rather than re-decided, and every refusal
+    comes back with its reason - a bulk action reporting only a count is how a queue
+    stops shrinking with nobody able to say why.
+    """
+    conn = sqlite3.connect(req.db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        if req.suggestion_ids is None:
+            ids = [r["suggestion_id"] for r in conn.execute(
+                "SELECT suggestion_id FROM ai_suggestion WHERE review_state = 'pending'")]
+        else:
+            ids = list(req.suggestion_ids)
+
+        decided: list[str] = []
+        refused: list[dict[str, str]] = []
+        for suggestion_id in ids:
+            try:
+                suggestions.review(conn, suggestion_id, req.state, req.actor, None)
+            except (KeyError, suggestions.AlreadyApplied, ValueError) as err:
+                refused.append({"suggestion_id": suggestion_id,
+                                "reason": _cause(err, suggestion_id)})
+                continue
+            decided.append(suggestion_id)
+        conn.commit()
+    finally:
+        conn.close()
+
+    by_reason: dict[str, int] = {}
+    for r in refused:
+        by_reason[r["reason"]] = by_reason.get(r["reason"], 0) + 1
+    return {
+        "attempted": len(ids),
+        "decided": len(decided),
+        "state": req.state,
+        "refused": len(refused),
+        "refused_by_reason": dict(sorted(by_reason.items(), key=lambda kv: -kv[1])),
+    }
 
 
 @router.post("/suggestions/apply")
@@ -431,6 +734,45 @@ def derive_from_rasters(req: DeriveRequest) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail=str(err)) from err
     except encode.SequenceExhausted as err:
         raise HTTPException(status_code=409, detail=str(err)) from err
+    finally:
+        conn.close()
+
+
+@router.get("/project")
+def open_project(db_path: str) -> dict[str, Any]:
+    """Read an existing project back without touching it.
+
+    The desktop app had exactly one way in - the create wizard - so a project built
+    yesterday could not be reopened today, and the toolbar's Open button had nothing to
+    call. Creating is not the same operation as opening, and making the operator re-run
+    the wizard over an existing GeoPackage is how the wizard came to overwrite one.
+
+    Deliberately read-only: it reports what the file holds, and refuses a file that is
+    not a project rather than initialising one at that path.
+    """
+    gpkg = Path(db_path)
+    if not gpkg.exists():
+        raise HTTPException(404, f"{gpkg} does not exist.")
+    conn = sqlite3.connect(gpkg)
+    conn.row_factory = sqlite3.Row
+    try:
+        try:
+            units, _rels, sources, settings = load_project(conn)
+        except store.ProjectIncomplete as err:
+            raise HTTPException(409, f"{gpkg.name} is not a cadastre project: {err}") from err
+        counts: dict[str, int] = {}
+        for u in units:
+            key = getattr(u.unit_type, "value", str(u.unit_type))
+            counts[key] = counts.get(key, 0) + 1
+        return {
+            "db_path": str(gpkg),
+            "name": gpkg.stem,
+            "project_crs": settings.project_crs,
+            "vertical_datum": settings.vertical_datum,
+            "units": len(units),
+            "unit_counts": counts,
+            "sources": [getattr(s, "source_id", str(s)) for s in sources],
+        }
     finally:
         conn.close()
 
@@ -500,9 +842,11 @@ def create_project(req: ProjectCreateRequest) -> dict[str, Any]:
     try:
         made = project.create(Path(req.db_path), settings, req.sources,
                               overwrite=req.overwrite)
-    except project.ProjectExists as err:
+    except (project.ProjectExists, project.UnreadableDestination) as err:
         # 409, not 422: the request is well formed, the destination is occupied. The
-        # caller must decide to destroy what is there; we do not decide for them.
+        # caller must decide to destroy what is there; we do not decide for them. An
+        # unreadable destination is the same answer for a stronger reason - we cannot
+        # even say what would be lost.
         raise HTTPException(409, str(err)) from err
     except project.ProjectCreateError as err:
         raise HTTPException(422, str(err)) from err
@@ -512,7 +856,7 @@ def create_project(req: ProjectCreateRequest) -> dict[str, Any]:
     try:
         init_schema(conn)
         report = ingest_gpkg.import_project(conn, load_project(conn)[3])
-        return {
+        result = {
             "db_path": made.db_path,
             "sources": made.sources,
             "layers": made.layers,
@@ -523,6 +867,12 @@ def create_project(req: ProjectCreateRequest) -> dict[str, Any]:
             "provisional_ulpins": report.minted,
             "unresolved_buildings": report.unresolved,
         }
+        # Elevation given to the wizard counts exactly as much as elevation added later.
+        # This was wired only into `/sources`, so a project created with all four files
+        # at once - the obvious way to do it - registered a DEM and a DSM and extruded
+        # nothing. The operator then met an empty 3D view telling them to add elevation
+        # they had already added.
+        return result | _derive_after_elevation(conn)
     except (ingest_gpkg.LayerMissing, ProjectIncomplete) as err:
         raise HTTPException(422, str(err)) from err
     finally:

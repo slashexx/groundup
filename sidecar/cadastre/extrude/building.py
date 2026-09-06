@@ -14,6 +14,15 @@ from . import raster
 #: a handful of them into a confident-looking number.
 MIN_COVERAGE = 0.6
 
+#: And below this many cells, whatever the fraction says.
+#:
+#: A fraction cannot express "this raster is too coarse for this building". A 20 m2
+#: footprint on a 5 m DEM covers less than one cell, so one valid pixel is 100% coverage
+#: and the median of one number is that number - published as a measured roof level, with
+#: nothing recording that it came from a single sample. Nine cells is a 3x3 neighbourhood,
+#: the smallest window in which a median means anything at all.
+MIN_VALID_PIXELS = 9
+
 
 class EstimatorMismatch(ValueError):
     """The project asks for a parapet deduction the roof estimator does not need.
@@ -44,19 +53,31 @@ def build(footprint: BaseGeometry, dem_path: str, dsm_path: str,
             "Applying the deduction would lower every floor by that amount with nothing "
             "reporting it. Set default_parapet_deduction_m to 0.0 in project_settings.")
 
-    cover = min(raster.coverage(dem_path, footprint), raster.coverage(dsm_path, footprint))
-    attrs: dict = {"raster_coverage": round(cover, 3)}
+    # The footprint is in the project CRS; the rasters may be in any. Saying so is what
+    # lets `raster` reproject rather than assume they agree.
+    crs = settings.project_crs
+    cover = min(raster.coverage(dem_path, footprint, crs),
+                raster.coverage(dsm_path, footprint, crs))
+    cells = min(raster.valid_pixels(dem_path, footprint, crs),
+                raster.valid_pixels(dsm_path, footprint, crs))
+    attrs: dict = {"raster_coverage": round(cover, 3), "raster_cells": cells}
 
-    if cover >= MIN_COVERAGE:
-        ground = raster.ground_level(dem_path, footprint)
-        roof = raster.roof_level(dsm_path, footprint)
+    if cover >= MIN_COVERAGE and cells >= MIN_VALID_PIXELS:
+        ground = raster.ground_level(dem_path, footprint, crs)
+        roof = raster.roof_level(dsm_path, footprint, crs)
         base = ground + settings.default_plinth_offset_m
         top = roof
         attrs |= {"ground_level_m": round(ground, 3), "roof_level_m": round(roof, 3),
                   "plinth_offset_m": settings.default_plinth_offset_m}
     else:
         base = top = None
-        attrs["heights_unavailable"] = "raster coverage below threshold"
+        attrs["heights_unavailable"] = (
+            f"only {cells} valid raster cell(s) under this footprint "
+            f"({cover:.1%} coverage). A median needs more than a handful of samples, "
+            f"so the height is left unknown rather than measured from {cells}."
+            if cells < MIN_VALID_PIXELS else
+            f"raster coverage {cover:.1%} is below the {MIN_COVERAGE:.0%} threshold. "
+            "The rasters do not cover enough of this footprint to measure it.")
 
     if floor_count is not None:
         attrs["floor_count"] = floor_count

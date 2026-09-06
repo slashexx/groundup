@@ -261,8 +261,8 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     # --- the API reference, which drifted to 3 routes out of 15 once already ---------
     ("README.md", "#### `GET /cadastre/document`", "#### `GET /cadastre/documentt`",
      "a route the reference stops describing"),
-    ("README.md", "Seventeen operations across sixteen paths",
-     "Sixteen operations across sixteen paths",
+    ("README.md", "Eighteen operations across seventeen paths",
+     "Seventeen operations across seventeen paths",
      "a count in the reference that no longer matches the router"),
     ("store.py",
      ("    covered = (\n"

@@ -1,18 +1,48 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Icons } from '../components/Icons';
 import { cadastre, findingsToRows } from '../data/cadastreApi';
-import { DataSourceBanner, useCadastreDocument } from '../data/useCadastre';
+import { DataSourceBanner, NothingYet, useCadastreDocument } from '../data/useCadastre';
 
 export default function ErrorCheckPage() {
-  const { doc, live, status, error: loadError, reload } = useCadastreDocument();
+  const { live, status, error: loadError, reload } = useCadastreDocument();
   const [filter, setFilter] = useState('all');
   const [selectedError, setSelectedError] = useState(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState(null);
+  const [run, setRun] = useState(null);
+  // never-run | reading | ready | missing | failed. `missing` and `failed` are separate
+  // states on purpose: "nobody has validated this project" and "we could not find out"
+  // are different answers, and collapsing them into an empty table states the first when
+  // only the second is known.
+  const [runState, setRunState] = useState('reading');
+  const [runError, setRunError] = useState(null);
 
-  // No fallback. An empty list here means validation has not run over this project;
-  // inventing rows would put findings on screen that belong to no unit anyone owns.
-  const errors = useMemo(() => (live && doc ? findingsToRows(doc) : []), [live, doc]);
+  // The run, not the document, is what this screen reads. The document carries the same
+  // findings, but it cannot say whether a run happened at all — an unvalidated project
+  // and a clean one both arrive as an empty list, and only one of them is a clean bill
+  // of health. `/runs/latest` answers 404 for the first.
+  const loadRun = useCallback(async () => {
+    setRunState('reading');
+    setRunError(null);
+    try {
+      setRun(await cadastre.latestRun());
+      setRunState('ready');
+    } catch (e) {
+      setRun(null);
+      if (e.status === 404) {
+        setRunState('missing');
+      } else {
+        setRunState('failed');
+        setRunError(e.message);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (live) loadRun();
+  }, [live, loadRun]);
+
+  const errors = runState === 'ready' ? findingsToRows(run) : [];
 
   const filtered = filter === 'all' ? errors : errors.filter(e => e.type === filter);
   const errorCount = errors.filter(e => e.type === 'error').length;
@@ -26,6 +56,7 @@ export default function ErrorCheckPage() {
     setActionError(null);
     try {
       await cadastre.validate();
+      await loadRun();
       await reload();
     } catch (e) {
       setActionError(e.message);
@@ -41,6 +72,7 @@ export default function ErrorCheckPage() {
     setActionError(null);
     try {
       await cadastre.acknowledge(row.findingId, 'reviewer');
+      await loadRun();
       await reload();
     } catch (e) {
       setActionError(e.message);
@@ -63,7 +95,9 @@ export default function ErrorCheckPage() {
             Error Checking
           </h2>
           <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>
-            Topology validation and data integrity checks
+            {runState === 'ready'
+              ? `Run ${run.run_id.slice(0, 8)} · ruleset ${run.ruleset_version}`
+              : 'Topology validation and data integrity checks'}
           </p>
         </div>
 
@@ -98,6 +132,26 @@ export default function ErrorCheckPage() {
 
       {/* Error Table */}
       <div className="error-table-wrapper">
+        {runState === 'failed' && (
+          <NothingYet title="Could not read the validation run">
+            {runError} — the checks may well have run; this screen simply could not fetch
+            the result, so it is not reporting one.
+          </NothingYet>
+        )}
+        {runState === 'missing' && (
+          <NothingYet title="No validation run on record">
+            Nothing has been validated in this project yet, so there are no findings — which
+            is not the same as there being no problems. Run the checks to find out.
+          </NothingYet>
+        )}
+        {runState === 'ready' && filtered.length === 0 && (
+          <NothingYet title={errors.length === 0 ? 'No findings' : `No ${filter}s in this run`}>
+            {errors.length === 0
+              ? `Run ${run.run_id.slice(0, 8)} checked every unit under ruleset ${run.ruleset_version} and raised nothing.`
+              : 'Other severities are still listed under the All filter.'}
+          </NothingYet>
+        )}
+        {runState === 'ready' && filtered.length > 0 && (
         <div className="data-table-wrapper">
           <table className="data-table">
             <thead>
@@ -113,7 +167,7 @@ export default function ErrorCheckPage() {
             </thead>
             <tbody>
               {filtered.map(err => (
-                <tr key={err.id} onClick={() => setSelectedError(err)} style={{ cursor: 'pointer' }}>
+                <tr key={err.findingId} onClick={() => setSelectedError(err)} style={{ cursor: 'pointer' }}>
                   <td>
                     <span className={`error-dot ${err.type}`} style={{ width: 8, height: 8 }} />
                   </td>
@@ -137,17 +191,24 @@ export default function ErrorCheckPage() {
                   </td>
                   <td>
                     <div style={{ display: 'flex', gap: 4 }}>
-                      <button className="btn btn-ghost btn-sm" title="View on Map">
+                      <button className="btn btn-ghost btn-sm" disabled title="Not built yet">
                         <Icons.Map2D style={{ width: 14, height: 14 }} />
                       </button>
-                      {live && err.type === 'warning' && !err.acknowledgedBy && (
+                      {/* An error is never acknowledgeable — the guard is the feature, so the
+                          button says so instead of offering a click that comes back 409. */}
+                      {err.type === 'error' ? (
+                        <button className="btn btn-ghost btn-sm" disabled
+                          title="Errors cannot be acknowledged. Fix the geometry and re-run the checks.">
+                          Ack
+                        </button>
+                      ) : err.acknowledgedBy ? null : (
                         <button className="btn btn-ghost btn-sm" title="Acknowledge this warning"
-                          disabled={busy}
+                          disabled={!live || busy}
                           onClick={(e) => { e.stopPropagation(); acknowledge(err); }}>
                           Ack
                         </button>
                       )}
-                      <button className="btn btn-ghost btn-sm" title="Fix">
+                      <button className="btn btn-ghost btn-sm" disabled title="Not built yet">
                         <Icons.Pencil style={{ width: 14, height: 14 }} />
                       </button>
                     </div>
@@ -157,6 +218,7 @@ export default function ErrorCheckPage() {
             </tbody>
           </table>
         </div>
+        )}
       </div>
     </div>
   );

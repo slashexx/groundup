@@ -141,3 +141,81 @@ failed joining `LD_LIBRARY_PATH`, where `:` is the separator. **The block could 
 natively off Windows.** The file is deleted; the default `target/` is already covered by
 `src-tauri/.gitignore`. A machine-specific target directory belongs in that developer's
 own `~/.cargo/config.toml` or `CARGO_TARGET_DIR`, never committed.
+
+## Second honesty pass — controls that reported states they did not have
+
+The first pass removed fabricated *data*. This one removes fabricated *state*: indicators,
+counts and controls that described something the app was not doing.
+
+**The shell's own status was hardcoded.** Two nav badges (`7` errors, `12` to review)
+rendered whenever the sidecar was offline, beside the banner saying there was no data —
+they now come from the document or do not render. The status bar's green pulsing
+"Connected" pill read the same `status` every screen already uses, so the shell can no
+longer contradict the page it frames; only `live` is green and pulsing. Its fixed
+`Lat 12.9716° / Lon 77.5946° / Elev 920.45 m / Scale 1:2,500` — Bengaluru, shown over
+every project — is replaced by the project's CRS and vertical datum. The clock no longer
+forces `en-IN`, and the version string is `__APP_VERSION__`, defined in `vite.config.js`
+from `package.json`, so a build cannot announce a version it is not.
+
+**The 2D map opened over Bengaluru.** `center = [12.9720, 77.5950]`, `zoom 17`, whatever
+the project held. It now opens on the project's own bounds, and a project with no geometry
+gets an empty state rather than a map centred on a city it has nothing to do with — a
+default centre is a claim about where the data is. The same fixed Lat/Lon/Elev/Scale
+overlay is now a real cursor readout: position from Leaflet's `mousemove`, the live zoom,
+and **metres per pixel rather than a scale ratio** — a `1:2,500` needs the display's
+physical size, which a browser does not know. There is no elevation because only the
+sidecar reads the DEM. Reports are throttled to ten a second; `mousemove` fires per pixel
+and each one re-renders a page holding every polygon in the project.
+
+**The layer panel was decoration.** Eleven checkboxes and eleven opacity pills over a
+`toggleLayer` nothing read, above a map that drew its tiles, parcels and buildings
+unconditionally — plus a search box with no handler. Eight of the eleven named things this
+app cannot render at all (satellite imagery, roads, DEM, DSM, survey and control points).
+`data/layers.js` now lists only what one of the two views genuinely draws, each entry
+declaring the `views` it applies to and the contract `unitType` it renders; the panel
+disables a row and says why when the project holds no such units or the current view does
+not draw them. Toggles and opacity are applied at the point of drawing, in both Leaflet
+and the Three.js scene, and the search box filters. Rasters are deliberately absent: a
+project registers them and `derive` reads them off disk, but nothing here renders one.
+
+**Project Settings was entirely local state.** A Save button that flashed a green tick and
+wrote nothing; a CRS read from `project.crs` when the sidecar sends `project_crs`, so it
+always fell back to EPSG:4326 and contradicted the sidebar; a ULPIN prefix invented for one
+demo ward (`29-BLR-042`) and an example identifier to match; a tile server and an
+`ai.ulpin.gov.in` endpoint no code reads. The page now renders `doc.project` **read-only**
+and says why: these were written once at creation, every unit already carries them, and
+changing one would invalidate every identifier and tolerance already issued. The identifier
+format shown is the real one from `ulpin/encode.py`, as a shape with named placeholders
+rather than a fabricated example ULPIN.
+
+**Create 3D Unit wrote nothing and said otherwise.** A four-step wizard with no API import
+that prefilled a building and parcel from the demo ward, multiplied a height difference by
+a magic `55.73` for a "Calculated Volume", drew a fixed SVG box as a preview of the
+operator's geometry, and ended on an invented ULPIN with a Draft badge and "This unit
+requires review and approval before it becomes an official record" — for a record that did
+not exist. There is no sidecar route for manual creation, and the missing piece is
+geometry: a unit is a prism over a real outline and this app cannot draw one. The route and
+nav entry stay; the body is an honest not-built state pointing at Upload Data and AI Tools,
+which do mint units.
+
+**One source-accuracy table, in `data/sourceKinds.js`.** The wizard and the Upload Data
+screen each held their own, and they disagreed — a footprint layer was 0.30/0.50 m through
+one and 2.00/5.00 m through the other, DEM 0.50/0.30 against 0.20/0.10. Every validation
+tolerance is `k * sqrt(acc_a² + acc_b²)` over those numbers, so the same file produced
+different findings depending on which screen the operator opened. Where they disagreed the
+looser number won, per the standing rule that under-claiming accuracy is safe. Upload also
+offered `control`, which is not a `source_type` the sidecar knows — `survey_control` is —
+so that card's files would have been refused with a 422.
+
+**Search never rendered an approved unit as approved.** It compared `status === 'Approved'`
+against the lowercase values the contract emits.
+
+**Dead code removed:** `DashboardPage`'s `ProgressRing`, `DonutChart`, `statusData`,
+`statusClass` and its own `iconMap`; `MapPage`'s `generateParcelPolygon`,
+`generateBuildingPolygon` and the unused `selectedBuildingData`. The dashboard's "Active
+Processing Jobs" and "Recent Activity" tables rendered five column headers over
+permanently empty arrays, which reads as "nothing is running" rather than "nothing is
+asking" — both now carry the same `NothingYet` explanation the rest of the app uses.
+There is no job queue (ingest, derive, detect and validate are synchronous calls from
+their own screens) and no audit log; what each decision recorded lives on the thing
+decided.

@@ -166,7 +166,7 @@ sidecar/cadastre/
 
 ### 4.1 REST API Reference ([`api.py`](./api.py))
 
-Seventeen operations across sixteen paths on `http://127.0.0.1:8000`, served by
+Twenty-one operations across nineteen paths on `http://127.0.0.1:8000`, served by
 `cadastre.app:app` — **not** `cadastre.api:router`, which uvicorn starts happily and
 then answers 500 on every request. Interactive docs at `/docs`; `GET /` enumerates the
 paths from the router itself.
@@ -193,12 +193,14 @@ Two conventions apply throughout:
 | | `POST /cadastre/suggestions` | take a batch from P3 |
 | | `GET /cadastre/suggestions` | the review queue |
 | | `POST /cadastre/suggestions/{id}/review` | a human accepts, edits or rejects |
+| | `POST /cadastre/suggestions/review` | the same, for the whole queue |
 | | `POST /cadastre/suggestions/apply` | reviewed suggestions become units |
 | **Checking** | `POST /cadastre/validate` | run every rule, persist the result |
 | | `GET /cadastre/runs/latest` | the most recent run and its findings |
 | | `POST /cadastre/findings/{id}/acknowledge` | a reviewer accepts a warning |
 | **Records** | `GET /cadastre/units/{unit_id}` | one unit, without its geometry |
 | | `POST /cadastre/units/{unit_id}/transition` | move a unit through its lifecycle |
+| | `POST /cadastre/units/transition` | move many, reporting each refusal |
 | | `GET /cadastre/ulpin/{ulpin}` | resolve an identifier, including a closed one |
 | **P4 → P5/P6/P1** | `GET /cadastre/document` | the whole project in the outbound shape |
 
@@ -243,6 +245,56 @@ handle is a file the operator selects and the project silently ignores.
   tile, never the tile itself.
 
 ---
+
+#### `POST /cadastre/sources`
+
+Appends sources to a project that already exists, and by default re-ingests so the new
+layers become units. This is what an operator uses when the footprints arrive after the
+parcels, or when elevation shows up later.
+
+```json
+{
+ "db_path": "ward42.gpkg",
+ "ingest": true,
+ "sources": [
+   {"path": "/data/buildings.geojson", "source_type": "footprint",
+    "name": "Municipal footprint survey", "provider": "ULB",
+    "capture_date": "2026-03-14", "crs": "EPSG:4326",
+    "vertical_datum": "EGM2008",
+    "horizontal_accuracy_m": 2.0, "vertical_accuracy_m": 5.0}
+ ]
+}
+```
+
+No project settings are accepted here, on purpose. The CRS, vertical datum and strata were
+decided once at creation and every unit already carries them; letting a later upload
+restate them would let two halves of one project disagree about where they are.
+
+Nothing is deleted. Re-ingesting is safe to repeat because units are matched on their
+source-local id, so adding footprints to a project that already holds its parcels keeps
+those parcels and every identifier issued against them — the response reports `created`
+and `reused` separately so it is visible which happened.
+
+`404` if the path holds no project, `409` if it holds one the ingest block never finished
+writing, `422` if a file is unreadable or missing.
+
+#### `GET /cadastre/project`
+
+Opens a project that already exists, and reports what it holds. Read-only: a path that is
+not a project is refused rather than initialised as a blank one there.
+
+```json
+{
+ "db_path": "/data/ward42.gpkg", "name": "ward42",
+ "project_crs": "EPSG:32643", "vertical_datum": "EGM2008",
+ "units": 5949, "unit_counts": {"land_parcel": 36, "building": 910, "floor": 5003},
+ "sources": ["SRC-PARCEL-MAP-5dc19b", "SRC-FOOTPRINT-108ec4"]
+}
+```
+
+Creating a project and opening one are different operations, and P1 only had the first.
+A project built yesterday could be reached only by running the wizard over the same file
+again — which is how the wizard came to overwrite one.
 
 #### `POST /cadastre/project`
 
@@ -466,6 +518,32 @@ against it, and there is no code path around this call.
 
 ---
 
+#### `POST /cadastre/suggestions/review`
+
+```json
+{ "db_path": "ward42.gpkg", "state": "accepted", "actor": "bibisha" }
+```
+```json
+{ "attempted": 727, "decided": 727, "state": "accepted",
+  "refused": 0, "refused_by_reason": {} }
+```
+
+Omit `suggestion_ids` to decide every suggestion still `pending` — the queue as it
+stands, never anything a person has already ruled on.
+
+P3 returns 727 detections over a ward. Ruling on them one at a time is not review: a
+screen offering only single decisions offers no way to finish, so the operator either
+stops or clicks until they stop reading, which is worse than not reviewing at all.
+
+**This is not a route around FR-05.** The decision still carries a name and a state,
+each suggestion goes through the same `suggestions.review`, and nothing becomes a unit
+until `apply` is called separately. What it removes is the clicking, not the step.
+
+A suggestion that has already become a unit is refused rather than re-decided, and every
+refusal comes back with its reason.
+
+---
+
 #### `POST /cadastre/suggestions/apply`
 
 Accepted and edited suggestions become building units. Body: `{"db_path": "..."}`.
@@ -613,6 +691,36 @@ so approval fails closed.
 - **400** — the lifecycle forbids it: `{"detail": "Cannot transition from needs_review to closed"}`
 - **409** — the ledger refuses: no parent parcel to mint under, or the identifier is
   already issued
+
+---
+
+#### `POST /cadastre/units/transition`
+
+```json
+{ "db_path": "ward42.gpkg", "target_status": "approved", "actor": "bibisha" }
+```
+```json
+{
+ "attempted": 5949, "approved": 4812, "refused": 1137,
+ "refused_by_reason": {
+  "U-… cannot be approved: error OVERLAP_SIBLING. Errors must be fixed and revalidated": 1130,
+  "no parent parcel to mint under": 7
+ },
+ "units": [{"unit_id": "9175aff7-…", "status": "approved", "ulpin": "…"}]
+}
+```
+
+Omit `unit_ids` to act on every unit currently in `needs_review`. Approving a ward one
+unit at a time is not review, it is data entry: 5,949 units is 5,949 clicks, so the
+screen offered no way to finish.
+
+**Every refusal is returned with the reason the guard gave.** A bulk approve reporting a
+single number is worse than none - the guard refuses individual units for individual
+reasons, and "4,812 approved" silently buries the 1,137 that were not. Nothing is rolled
+back on a refusal: the approvable units are approved, which is what was asked for.
+
+Each unit goes through the same `lifecycle.transition` as the single-unit route, so the
+fail-closed guarantee is identical - this is a loop, not a second implementation.
 
 ---
 

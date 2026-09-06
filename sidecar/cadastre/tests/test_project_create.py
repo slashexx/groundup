@@ -46,8 +46,24 @@ def source(path, source_type="parcel_map", **over):
     return s
 
 
+#: The settings a wizard collects. Spelled out rather than left to defaults, because
+#: `ProjectCreateRequest` no longer has any - a CRS and a vertical datum are facts about
+#: the operator's data, and a default silently reprojected every project into an Indian
+#: UTM zone with nothing downstream able to notice.
+PROJECT_DEFAULTS = {
+    "project_crs": "EPSG:32643",
+    "vertical_datum": "EGM2008",
+    "stratum_below_limit_m": -30.0,
+    "stratum_above_limit_m": 150.0,
+    "default_plinth_offset_m": 0.6,
+    "default_parapet_deduction_m": 0.0,
+    "ulpin_version": "v1",
+    "ruleset_version": "r1",
+}
+
+
 def body(tmp_path, sources, **over):
-    b = {"db_path": str(tmp_path / "new.gpkg"), "sources": sources}
+    b = {"db_path": str(tmp_path / "new.gpkg"), "sources": sources, **PROJECT_DEFAULTS}
     b.update(over)
     return b
 
@@ -187,3 +203,224 @@ def test_source_types_route_matches_what_the_module_handles(client):
     got = client.get("/cadastre/source-types").json()
     offered = set(got["vector"]) | set(got["raster"]) | set(got["register_only"])
     assert offered == project.SOURCE_TYPES
+
+
+# --- adding elevation to a project that already exists --------------------------------
+
+def _rasters(tmp_path, db_path):
+    """A DEM/DSM pair over the project's own units, in the project's own CRS.
+
+    Written in EPSG:32643 rather than the sources' EPSG:4326 on purpose: `raster.coverage`
+    divides the footprint's area by the raster's cell size, so a footprint in metres
+    against a raster in degrees reports coverage near zero and every building is skipped
+    as thin - a units mismatch that looks exactly like missing data.
+    """
+    import sqlite3
+
+    import numpy as np
+    import rasterio
+    import shapely.wkb
+    from rasterio.transform import from_origin
+
+    conn = sqlite3.connect(db_path)
+    geoms = [shapely.wkb.loads(r[0]) for r in conn.execute("SELECT footprint_wkb FROM unit")]
+    conn.close()
+    xs = [c for g in geoms for c in g.bounds[0::2]]
+    ys = [c for g in geoms for c in g.bounds[1::2]]
+    pad = 20.0
+    x0, y0, x1, y1 = min(xs) - pad, min(ys) - pad, max(xs) + pad, max(ys) + pad
+
+    res = 0.5                                     # half-metre, as a drone survey would be
+    w, h = int((x1 - x0) / res) + 1, int((y1 - y0) / res) + 1
+    out = []
+    for kind, value in (("dem", 100.0), ("dsm", 112.0)):
+        path = tmp_path / f"{kind}.tif"
+        with rasterio.open(
+            path, "w", driver="GTiff", height=h, width=w, count=1, dtype="float32",
+            crs="EPSG:32643", transform=from_origin(x0, y1, res, res),
+        ) as dst:
+            dst.write(np.full((h, w), value, "float32"), 1)
+        out.append(str(path))
+    return out
+
+
+def test_registering_elevation_extrudes_the_project_it_was_added_to(
+        client, tmp_path, parcels, buildings):
+    """The flow that left a project of footprints with an empty 3D view.
+
+    Elevation was registered, ingest reported success, and every building still had no
+    height: `derive` sat behind a button on another screen with nothing pointing at it.
+    Registering a DEM and a DSM over footprints has one consequence the operator wants.
+    """
+    import sqlite3
+
+    db = str(tmp_path / "new.gpkg")
+    r = client.post("/cadastre/project", json=body(
+        tmp_path, [source(parcels), source(buildings, "footprint")]))
+    assert r.status_code == 200, r.text
+
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT count(*) FROM unit WHERE unit_type='building' "
+                        "AND lower_limit IS NULL").fetchone()[0] == 1
+    conn.close()
+
+    dem, dsm = _rasters(tmp_path, db)
+    r = client.post("/cadastre/sources", json={
+        "db_path": db, "ingest": True,
+        "sources": [source(dem, "dem", crs="EPSG:32643"), source(dsm, "dsm", crs="EPSG:32643")],
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["heights_derived"] == 1, r.json()
+
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT count(*) FROM unit WHERE unit_type='building' "
+                        "AND lower_limit IS NULL").fetchone()[0] == 0
+    conn.close()
+
+
+def test_adding_a_vector_source_does_not_extrude_anything(client, tmp_path, parcels, buildings):
+    """No elevation registered, so there is still nothing to measure a height from."""
+    import sqlite3
+
+    db = str(tmp_path / "new.gpkg")
+    client.post("/cadastre/project", json=body(tmp_path, [source(parcels)]))
+    r = client.post("/cadastre/sources", json={
+        "db_path": db, "ingest": True, "sources": [source(buildings, "footprint")]})
+    assert r.status_code == 200, r.text
+    assert "heights_derived" not in r.json()
+
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT count(*) FROM unit WHERE unit_type='building' "
+                        "AND lower_limit IS NULL").fetchone()[0] == 1
+    conn.close()
+
+
+def test_a_project_created_with_elevation_is_extruded_at_creation(
+        client, tmp_path, parcels, buildings):
+    """Elevation given to the wizard counts as much as elevation added later.
+
+    Auto-derive was wired only into `/sources`, so creating a project with all four
+    files at once - parcels, footprints, DEM, DSM, which is the obvious way to do it -
+    registered both rasters and extruded nothing. The 3D view then told the operator to
+    add elevation they had already added.
+    """
+    import sqlite3
+
+    db = str(tmp_path / "new.gpkg")
+    seed = client.post("/cadastre/project", json=body(
+        tmp_path, [source(parcels), source(buildings, "footprint")]))
+    assert seed.status_code == 200, seed.text
+    dem, dsm = _rasters(tmp_path, db)
+
+    fresh = str(tmp_path / "withelev.gpkg")
+    r = client.post("/cadastre/project", json={
+        "db_path": fresh,
+        "project_crs": "EPSG:32643", "vertical_datum": "EGM2008",
+        "stratum_below_limit_m": -30.0, "stratum_above_limit_m": 150.0,
+        "default_plinth_offset_m": 0.6, "default_parapet_deduction_m": 0.0,
+        "ulpin_version": "v1", "ruleset_version": "r1",
+        "sources": [source(parcels), source(buildings, "footprint"),
+                    source(dem, "dem", crs="EPSG:32643"),
+                    source(dsm, "dsm", crs="EPSG:32643")],
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["heights_derived"] == 1
+
+    conn = sqlite3.connect(fresh)
+    assert conn.execute("SELECT count(*) FROM unit WHERE unit_type='building' "
+                        "AND lower_limit IS NULL").fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT count(*) FROM unit WHERE unit_type='floor'").fetchone()[0] == 0, \
+        "the envelope, and no floor duplicating it"
+    conn.close()
+
+
+def test_creating_without_elevation_reports_no_heights(client, tmp_path, parcels):
+    """Nothing to measure from, so the key is absent rather than zero."""
+    r = client.post("/cadastre/project", json=body(tmp_path, [source(parcels)]))
+    assert "heights_derived" not in r.json()
+
+
+# --- settings are asked for, never assumed ---------------------------------------------
+
+@pytest.mark.parametrize("field", [
+    "project_crs", "vertical_datum", "stratum_below_limit_m",
+    "stratum_above_limit_m", "default_plinth_offset_m",
+])
+def test_a_missing_project_setting_is_refused_not_defaulted(client, tmp_path, parcels, field):
+    """Every one of these used to default to an Indian value.
+
+    A caller in Kenya or Germany omitting `project_crs` had their data reprojected into
+    UTM 43N and every number downstream stayed plausible: areas distorted by a factor
+    growing with distance from 75E, parcels landing in the Bay of Bengal, and no rule
+    able to notice - ingest stamps each unit *with* the setting rather than checking
+    against it, so `crs_mismatch` compares a value to itself.
+    """
+    payload = body(tmp_path, [source(parcels)])
+    del payload[field]
+    r = client.post("/cadastre/project", json=payload)
+    assert r.status_code == 422, r.text
+    assert field in r.text
+
+
+def test_a_route_without_a_project_path_is_refused_not_pointed_at_a_stray_file(client):
+    """`sqlite3.connect` creates the file it is given.
+
+    Eight routes defaulted `db_path` to "pilot.gpkg", so a caller who forgot it created
+    an empty database beside the server process and then got a 404 or a 500 stack trace -
+    never "you did not say which project".
+    """
+    assert client.get("/cadastre/document").status_code == 422
+    assert client.get("/cadastre/runs/latest").status_code == 422
+
+
+# --- provenance is the operator's, not the pipeline's ----------------------------------
+
+def test_a_vector_source_keeps_the_provenance_the_operator_declared(client, tmp_path, parcels):
+    """P2's writer defaults `provider` and `capture_date` and is never told otherwise.
+
+    `process_file` takes only the source name and the two accuracies, so every vector
+    layer was registered as "Survey of India / DoLR" on a fixed date - a file from anyone
+    at all attributed to a national survey nobody involved had touched. The registry is
+    what every tolerance in this block derives from, and what the desktop panel shows a
+    reviewer under "where this came from".
+    """
+    import sqlite3
+
+    db = str(tmp_path / "new.gpkg")
+    r = client.post("/cadastre/project", json=body(tmp_path, [source(
+        parcels, provider="Assam DoLR", capture_date="2026-04-02",
+        name="GHY parcels")]))
+    assert r.status_code == 200, r.text
+
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT name, provider, capture_date, horizontal_accuracy_m "
+        "FROM source WHERE source_type = 'parcel_map'").fetchone()
+    conn.close()
+    assert row["provider"] == "Assam DoLR"
+    assert row["capture_date"] == "2026-04-02"
+    assert row["name"] == "GHY parcels"
+    assert row["horizontal_accuracy_m"] == 0.30
+
+
+def test_a_vector_source_added_later_keeps_its_provenance_too(client, tmp_path, parcels, buildings):
+    """`add_sources` had the same gap, so the fix is shared rather than duplicated."""
+    import sqlite3
+
+    db = str(tmp_path / "new.gpkg")
+    client.post("/cadastre/project", json=body(tmp_path, [source(parcels)]))
+    r = client.post("/cadastre/sources", json={
+        "db_path": db, "ingest": True,
+        "sources": [source(buildings, "footprint", provider="Kerala DoLR",
+                           capture_date="2026-05-15")]})
+    assert r.status_code == 200, r.text
+
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT provider, capture_date FROM source "
+        "WHERE source_type = 'footprint'").fetchone()
+    conn.close()
+    assert (row["provider"], row["capture_date"]) == ("Kerala DoLR", "2026-05-15")

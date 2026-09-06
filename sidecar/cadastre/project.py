@@ -81,6 +81,26 @@ class CreatedProject:
     skipped: list[str] = field(default_factory=list)
 
 
+def _correct_vector_provenance(conn: sqlite3.Connection, s) -> None:
+    """Write the operator's declared provenance over the defaults P2 stamped.
+
+    `process_file` takes only the source name and the two accuracies, so provider,
+    capture date and vertical datum kept P2's defaults - and a file from anyone at all
+    was attributed to "Survey of India / DoLR" on a date nobody entered. This block's
+    whole tolerance chain rests on the registry, and an attribution the operator never
+    made is worse than a blank one.
+
+    An UPDATE rather than a re-INSERT: P2 also computed `coverage_wkt`, and replacing the
+    row wholesale would discard it.
+    """
+    conn.execute(
+        "UPDATE source SET name = ?, provider = ?, capture_date = ?, crs = ?, "
+        "vertical_datum = ?, horizontal_accuracy_m = ?, vertical_accuracy_m = ? "
+        "WHERE source_id = ?",
+        (s.name, s.provider, s.capture_date, s.crs, s.vertical_datum,
+         s.horizontal_accuracy_m, s.vertical_accuracy_m, s.source_id))
+
+
 def _register_source(conn: sqlite3.Connection, s, coverage_wkt: str = "") -> None:
     """Write one row of the `source` registry — the table P4's tolerances come from."""
     conn.execute(
@@ -172,6 +192,7 @@ def create(gpkg: Path, settings, sources: list, *,
 
         for s in sources:
             if s.source_type in VECTOR_LAYERS:
+                _correct_vector_provenance(conn, s)
                 continue
             _register_source(conn, s)
             out.sources.append(s.source_id)
@@ -197,11 +218,28 @@ def new_source_id(source_type: str) -> str:
     return f"SRC-{source_type.upper().replace('_', '-')}-{uuid.uuid4().hex[:6]}"
 
 
+class UnreadableDestination(RuntimeError):
+    """Something is at the destination path and we could not read it.
+
+    Distinct from `ProjectExists`, which means we read it and it holds units. Here we do
+    not know what it holds, which is the case where deleting it is least defensible.
+    """
+
+
 def _units_held(gpkg: Path) -> int:
     """How many units an existing GeoPackage already holds, 0 if it holds none.
 
-    A path that is absent, unreadable, or not one of our projects is not something we
-    would be destroying, so it counts as empty.
+    Absent means zero: there is nothing there to destroy.
+
+    A file we cannot read is NOT zero. This previously returned 0 on any `sqlite3.Error`
+    and reasoned that a path which is "unreadable, or not one of our projects" is not
+    something we would be destroying - exactly backwards. A locked database, a corrupt
+    file, a GeoPackage written by QGIS holding a year of survey work, or one belonging to
+    another tool all raise here, and every one of them was then deleted by the
+    `unlink(missing_ok=True)` two lines after the guard. The only operation in this module
+    that cannot be undone was reachable by any read failure.
+
+    Not being able to read the destination is a reason to stop, not to proceed.
     """
     if not gpkg.exists():
         return 0
@@ -211,5 +249,85 @@ def _units_held(gpkg: Path) -> int:
             return int(conn.execute("SELECT count(*) FROM unit").fetchone()[0])
         finally:
             conn.close()
-    except sqlite3.Error:
-        return 0
+    except sqlite3.OperationalError as err:
+        # "no such table: unit" is the one readable answer that genuinely means empty:
+        # the file opened as SQLite and simply is not one of our projects yet.
+        if "no such table" in str(err).lower():
+            return 0
+        raise UnreadableDestination(
+            f"{gpkg} exists and could not be read: {err}. Refusing to overwrite a file "
+            "whose contents are unknown. Move it aside, or choose another path."
+        ) from err
+    except sqlite3.Error as err:
+        raise UnreadableDestination(
+            f"{gpkg} exists and is not a readable database: {err}. Refusing to overwrite "
+            "a file whose contents are unknown. Move it aside, or choose another path."
+        ) from err
+
+
+def add_sources(gpkg: Path, settings, sources: list) -> CreatedProject:
+    """Add sources to a project that already exists.
+
+    Creation and addition are the same work in a different order: `create` writes the
+    project settings first because nothing has stamped them yet, and this reads them back
+    because the operator set them once and every unit already carries them. Letting a
+    later upload restate the CRS would let two halves of one project disagree about where
+    they are.
+
+    Nothing is deleted. The GeoPackage is opened, a layer is appended, and the caller
+    re-ingests - so adding a footprint layer to a project that already holds its parcels
+    keeps the parcels, and their identifiers with them.
+    """
+    from run_pipeline import GeoDataPipeline
+
+    if not gpkg.exists():
+        raise ProjectCreateError(
+            f"{gpkg} does not exist. Create the project before adding to it.")
+    if not sources:
+        raise ProjectCreateError("no sources to add.")
+
+    missing = [s.path for s in sources if not Path(s.path).exists()]
+    if missing:
+        raise ProjectCreateError("file not found: " + ", ".join(missing))
+
+    out = CreatedProject(db_path=str(gpkg))
+    pipeline = GeoDataPipeline(gpkg_output_path=str(gpkg), target_crs=settings.project_crs)
+
+    for s in (x for x in sources if x.source_type in VECTOR_LAYERS):
+        layer = VECTOR_LAYERS[s.source_type]
+        ok = pipeline.process_file(
+            s.path, layer, s.source_id, s.source_type,
+            source_name=s.name,
+            horizontal_accuracy_m=s.horizontal_accuracy_m,
+            vertical_accuracy_m=s.vertical_accuracy_m,
+        )
+        if not ok:
+            raise ProjectCreateError(
+                f"P2 could not read {Path(s.path).name} as a {layer} layer. Check that it "
+                "is a vector file with a CRS its driver can report.")
+        out.sources.append(s.source_id)
+        out.layers.append(layer)
+
+    conn = sqlite3.connect(gpkg)
+    try:
+        for s in sources:
+            if s.source_type in VECTOR_LAYERS:
+                _correct_vector_provenance(conn, s)
+                continue
+            _register_source(conn, s)
+            out.sources.append(s.source_id)
+            if s.source_type in RASTER_KINDS:
+                conn.execute(
+                    "INSERT OR REPLACE INTO raster (raster_id, kind, path, crs, "
+                    "vertical_datum, resolution_m, source_id) VALUES (?,?,?,?,?,?,?)",
+                    (f"RST-{s.source_id}", RASTER_KINDS[s.source_type], s.path, s.crs,
+                     s.vertical_datum, s.resolution_m or s.horizontal_accuracy_m,
+                     s.source_id))
+                out.rasters.append(s.source_id)
+            else:
+                out.registered_only.append(s.source_id)
+        conn.commit()
+    finally:
+        conn.close()
+
+    return out

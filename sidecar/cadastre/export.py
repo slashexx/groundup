@@ -86,9 +86,33 @@ def finding_to_dict(f: Finding) -> dict[str, Any]:
     }
 
 
+def _proj4(crs: str) -> str | None:
+    """The project CRS as a proj4 string, for a consumer that cannot look one up.
+
+    The viewer and the desktop map reproject to WGS84 in the browser with proj4js, which
+    has no CRS database - so `adapter.ts` derived the definition arithmetically from the
+    EPSG code and supported UTM alone, throwing `Unsupported CRS` on anything else. The
+    creation wizard offers EPSG:7755 (India TM), which is not UTM, so choosing it built a
+    project whose 2D map could not draw it.
+
+    pyproj is already a dependency here and knows every code in the EPSG registry.
+    Publishing the definition alongside the code means the browser needs no database and
+    no special cases: a national grid, a state plane, a Lambert conformal conic all
+    arrive ready to use.
+    """
+    try:
+        from pyproj import CRS
+        return CRS.from_user_input(crs).to_proj4()
+    except Exception:
+        # An unknown or malformed code. The consumer still has `project_crs` and can say
+        # what it could not resolve, which is more useful than this raising here.
+        return None
+
+
 def project_to_dict(s: ProjectSettings) -> dict[str, Any]:
     return {
         "project_crs": s.project_crs,
+        "project_proj4": _proj4(s.project_crs),
         "vertical_datum": s.vertical_datum,
         "stratum_below_limit_m": s.stratum_below_limit_m,
         "stratum_above_limit_m": s.stratum_above_limit_m,
@@ -104,6 +128,7 @@ def document(
     units: list[Unit],
     relationships: list[Relationship],
     findings: list[Finding] | None = None,
+    sources: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """The whole project in the shape `contracts/fixtures/demo-parcel.json` publishes.
 
@@ -111,6 +136,13 @@ def document(
     uses the latter because in a fixture they are an expectation; live they are a
     result. Emitting both means a consumer written against the fixture keeps working
     against the endpoint without a coordinated change.
+
+    `sources` is the provenance registry - every accuracy in this block is derived from
+    it. A unit carries `source_ids` and nothing else, so a consumer holding only the
+    document could show which files a unit came from but never what they are worth:
+    "0.30 m, Survey of India" had to be looked up in a database the viewer cannot see.
+    Emitting the registry alongside the units is what makes a displayed tolerance
+    traceable rather than an assertion.
     """
     out: dict[str, Any] = {
         "project": project_to_dict(settings),
@@ -120,6 +152,7 @@ def document(
              "rel_type": r.rel_type.value}
             for r in relationships
         ],
+        "sources": sources or [],
     }
     serialised = [finding_to_dict(f) for f in (findings or [])]
     out["findings"] = serialised

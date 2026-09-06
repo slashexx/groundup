@@ -11,6 +11,7 @@ is nothing left to validate against.
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -75,5 +76,44 @@ def test_an_empty_or_absent_path_is_not_a_project(tmp_path):
     conn.close()
     assert project._units_held(blank) == 0
 
-    (tmp_path / "notours.gpkg").write_bytes(b"not a database")
-    assert project._units_held(tmp_path / "notours.gpkg") == 0
+    # A file that is not a database used to assert 0 here, which is what made the
+    # overwrite guard fail open - see
+    # `test_a_file_that_is_not_a_database_is_never_overwritten` below, which now asserts
+    # the opposite. "We could not read it" is not "there is nothing there".
+
+
+# --- a destination we cannot read is not an empty one ----------------------------------
+
+def test_a_file_that_is_not_a_database_is_never_overwritten(tmp_path):
+    """The guard was reachable by any read failure, and the next line deletes the file.
+
+    `_units_held` returned 0 on every `sqlite3.Error` and reasoned that a path which is
+    "unreadable, or not one of our projects" is not something we would be destroying -
+    exactly backwards. A locked database, a corrupt file, or a GeoPackage holding a year
+    of someone else's survey work all raise here, and every one was then deleted by the
+    `unlink(missing_ok=True)` two lines on. The one irreversible operation in this module
+    was guarded by a check that failed open.
+    """
+    target = tmp_path / "not-a-db.gpkg"
+    target.write_bytes(b"this is not a sqlite database, it is somebody's data")
+
+    with pytest.raises(project.UnreadableDestination):
+        project.create(target, SETTINGS, [])
+
+    assert target.read_bytes().startswith(b"this is not a sqlite database"), \
+        "the file must still be there, byte for byte"
+
+
+def test_a_sqlite_file_that_is_not_a_project_is_treated_as_empty(tmp_path):
+    """The one readable answer that genuinely means "nothing of ours here"."""
+    target = tmp_path / "other.gpkg"
+    conn = sqlite3.connect(target)
+    conn.execute("CREATE TABLE something_else (x INTEGER)")
+    conn.commit()
+    conn.close()
+
+    assert project._units_held(target) == 0
+
+
+def test_an_absent_path_is_empty(tmp_path):
+    assert project._units_held(tmp_path / "nothing-here.gpkg") == 0

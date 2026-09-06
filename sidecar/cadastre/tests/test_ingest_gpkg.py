@@ -273,3 +273,60 @@ def test_imported_units_are_never_born_approved(gpkg):
     for u in ingest_gpkg.import_project(gpkg, SETTINGS).units:
         assert u.status is Status.NEEDS_REVIEW
         assert u.ulpin is None
+
+
+# --- re-ingest is a refresh, not a reset ---------------------------------------------
+
+def test_re_ingest_keeps_the_heights_derive_produced(gpkg):
+    """Registering a raster re-ingests the footprint layer. That must not undo `derive`.
+
+    This is how the desktop 3D view went empty: adding a DEM through Upload Data
+    re-ingested, `save_unit`'s INSERT OR REPLACE wrote the fresh `lower_limit=None` over
+    every extruded building, and nothing reported a thing - the heights were simply gone
+    and the scene had nothing to draw.
+    """
+    add_parcel(gpkg, "P-1", rect(0, 0, 100, 100))
+    add_building(gpkg, "B-1", rect(10, 10, 20, 20), parcel="P-1", floors=4)
+    first = ingest_gpkg.import_project(gpkg, SETTINGS)
+    building = next(u for u in first.units if u.unit_type is UnitType.BUILDING)
+
+    # Stand in for `derive`: give the building the range a DEM/DSM pair would produce.
+    building.lower_limit, building.upper_limit = 913.0, 925.0
+    store.save_unit(gpkg, building)
+    gpkg.commit()
+
+    second = ingest_gpkg.import_project(gpkg, SETTINGS)
+    assert second.reused == 2, "the same parcel and building, matched on local id"
+
+    row = gpkg.execute(
+        "SELECT lower_limit, upper_limit FROM unit WHERE unit_id = ?",
+        (building.unit_id,)).fetchone()
+    assert (row["lower_limit"], row["upper_limit"]) == (913.0, 925.0)
+
+
+def test_re_ingest_keeps_an_issued_ulpin_and_its_approval(gpkg):
+    """An approved unit does not go back to needs_review because a source was re-read."""
+    add_parcel(gpkg, "P-1", rect(0, 0, 100, 100))
+    first = ingest_gpkg.import_project(gpkg, SETTINGS)
+    parcel = first.units[0]
+
+    parcel.ulpin = parcel.ulpin_provisional
+    parcel.status = Status.APPROVED
+    store.save_unit(gpkg, parcel)
+    gpkg.commit()
+
+    ingest_gpkg.import_project(gpkg, SETTINGS)
+    row = gpkg.execute(
+        "SELECT ulpin, status FROM unit WHERE unit_id = ?", (parcel.unit_id,)).fetchone()
+    assert row["ulpin"] == parcel.ulpin
+    assert row["status"] == Status.APPROVED.value
+
+
+def test_a_first_ingest_is_unaffected_by_the_carry_forward(gpkg):
+    """Nothing to carry forward from; the guard must not invent a height."""
+    add_parcel(gpkg, "P-1", rect(0, 0, 100, 100))
+    add_building(gpkg, "B-1", rect(10, 10, 20, 20), parcel="P-1", floors=4)
+    ingest_gpkg.import_project(gpkg, SETTINGS)
+    row = gpkg.execute(
+        "SELECT lower_limit, upper_limit FROM unit WHERE unit_type = 'building'").fetchone()
+    assert row["lower_limit"] is None and row["upper_limit"] is None

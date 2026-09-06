@@ -3,8 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import { MapContainer, TileLayer, Polygon, Popup, Marker, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import { Icons } from '../components/Icons';
-import { MAP_LAYERS } from '../data/layers';
+import { LAYER_GROUP_LABELS, MAP_LAYERS } from '../data/layers';
 import { useCadastreDocument } from '../data/useCadastre';
+import { UNIT_TYPE_LABELS } from '../data/cadastreApi';
 // P5 owns the projected-CRS-to-WGS84 conversion. Importing it rather than copying it
 // keeps one implementation: the desktop app and the published web build have to agree
 // on where a building is, exactly, and two copies of that maths would drift.
@@ -14,7 +15,11 @@ import { fromP4Document } from '../../../viewer/src/lib/adapter';
 function useProjectGeometry() {
   const { doc } = useCadastreDocument();
   return useMemo(() => {
-    if (!doc) return { parcels: [], buildings: [], bounds: null };
+    if (!doc) return { parcels: [], buildings: [], bounds: null, sceneUnits: [],
+                       projectExtent: null, withHeights: 0, typeCounts: {},
+                       unitsById: new Map(), sourcesById: new Map(),
+                       findingsByUnit: new Map(), parentOf: new Map(),
+                       childrenOf: new Map() };
 
     const units = fromP4Document(doc);
     // Leaflet wants [lat, lng]; the adapter returns GeoJSON order.
@@ -32,20 +37,149 @@ function useProjectGeometry() {
           : [[lat, lon], [lat, lon]];
       }
     }
+    // The 3D scene works in the project CRS directly: it is already metres, so a box
+    // drawn from these numbers is the real size of the thing. Reprojecting to degrees
+    // and back would only lose precision on the way.
+    const raw = doc.units ?? [];
+    // `contains` gives each floor its building, so selecting one can open its stack.
+    const parentOf = new Map();
+    for (const r of doc.relationships ?? []) {
+      if (r.rel_type === 'contains') parentOf.set(r.to_unit_id, r.from_unit_id);
+    }
+    const unitsById = new Map(raw.map((u) => [u.unit_id, u]));
+    const sourcesById = new Map((doc.sources ?? []).map((s) => [s.source_id, s]));
+    const childrenOf = new Map();
+    for (const [child, parent] of parentOf) {
+      if (!childrenOf.has(parent)) childrenOf.set(parent, []);
+      childrenOf.get(parent).push(child);
+    }
+    // Findings are keyed by unit so a panel can show a unit's own, rather than sending
+    // the reader to a project-wide error list to find out whether this one is clean.
+    const findingsByUnit = new Map();
+    for (const f of doc.findings ?? []) {
+      if (!findingsByUnit.has(f.unit_id)) findingsByUnit.set(f.unit_id, []);
+      findingsByUnit.get(f.unit_id).push(f);
+    }
+
+    const sceneUnits = raw.map((u) => ({
+      unit_id: u.unit_id,
+      unit_type: u.unit_type,
+      label: u.ulpin ?? u.ulpin_provisional ?? u.unit_id,
+      lower_limit: u.lower_limit,
+      upper_limit: u.upper_limit,
+      ringMetres: u.footprint_2d?.coordinates?.[0] ?? [],
+      parent_unit_id: parentOf.get(u.unit_id) ?? null,
+    })).filter((u) => u.ringMetres.length);
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    let groundZ = Infinity;
+    for (const u of sceneUnits) {
+      for (const [x, y] of u.ringMetres) {
+        if (x < minX) minX = x; if (x > maxX) maxX = x;
+        if (y < minY) minY = y; if (y > maxY) maxY = y;
+      }
+      if (u.unit_type !== 'land_parcel' && u.lower_limit != null && u.lower_limit < groundZ) {
+        groundZ = u.lower_limit;
+      }
+    }
+    const projectExtent = Number.isFinite(minX)
+      ? { minX, minY, maxX, maxY, groundZ: Number.isFinite(groundZ) ? groundZ : 0 }
+      : null;
+
+    // What the project actually holds, per unit type. The layer panel offers a toggle
+    // only where there is something to toggle.
+    const typeCounts = {};
+    for (const u of raw) typeCounts[u.unit_type] = (typeCounts[u.unit_type] ?? 0) + 1;
+
     return {
       parcels: parcels.map((u) => ({ unit: u, positions: latlng(u) })),
       buildings: buildings.map((u) => ({ unit: u, positions: latlng(u) })),
       bounds,
+      typeCounts,
+      sceneUnits,
+      projectExtent,
+      unitsById,
+      sourcesById,
+      findingsByUnit,
+      parentOf,
+      childrenOf,
+      withHeights: sceneUnits.filter(
+        (u) => u.unit_type !== 'land_parcel' && u.lower_limit != null).length,
     };
   }, [doc]);
 }
 
-/** Frame the project once its geometry arrives. */
+/** Frame the project once its geometry arrives, and answer the toolbar. */
 function FitToProject({ bounds }) {
   const map = useMap();
   useEffect(() => {
     if (bounds) map.fitBounds(bounds, { padding: [40, 40] });
   }, [bounds, map]);
+
+  // The toolbar owns no map instance, so it asks by event and this answers.
+  useEffect(() => {
+    const zoomIn = () => map.zoomIn();
+    const zoomOut = () => map.zoomOut();
+    const fit = () => bounds && map.fitBounds(bounds, { padding: [40, 40] });
+    window.addEventListener('map-zoom-in', zoomIn);
+    window.addEventListener('map-zoom-out', zoomOut);
+    window.addEventListener('map-fit-project', fit);
+    return () => {
+      window.removeEventListener('map-zoom-in', zoomIn);
+      window.removeEventListener('map-zoom-out', zoomOut);
+      window.removeEventListener('map-fit-project', fit);
+    };
+  }, [map, bounds]);
+  return null;
+}
+
+/** What the 2D overlay reports, read off the map itself.
+ *
+ *  The overlay used to state a fixed latitude, longitude, elevation and scale for
+ *  Bengaluru, over every project and whatever the map was showing. Leaflet knows where
+ *  the pointer is and how far a pixel reaches, so those are reported and nothing else:
+ *  there is no elevation here because the project's DEM is a file on disk that only the
+ *  sidecar reads, and no "1:2,500" because a scale ratio needs the physical size of the
+ *  display, which a browser does not know. Metres per pixel is the same fact without the
+ *  invented half.
+ */
+function MapReadout({ onChange }) {
+  const map = useMap();
+  const at = useRef(null);
+  const lastReport = useRef(0);
+
+  useEffect(() => {
+    const report = () => {
+      lastReport.current = performance.now();
+      const a = map.containerPointToLatLng([0, 0]);
+      const b = map.containerPointToLatLng([100, 0]);
+      onChange({
+        lat: at.current?.lat ?? null,
+        lng: at.current?.lng ?? null,
+        zoom: map.getZoom(),
+        metresPerPixel: map.distance(a, b) / 100,
+      });
+    };
+    // Ten a second. `mousemove` fires per pixel, and each report re-renders a page
+    // holding every polygon in the project; a coordinate readout is not worth making
+    // the map stutter under the hand that is moving it.
+    const move = (e) => {
+      at.current = e.latlng;
+      if (performance.now() - lastReport.current >= 100) report();
+    };
+    const out = () => { at.current = null; report(); };
+
+    map.on('mousemove', move);
+    map.on('mouseout', out);
+    map.on('zoomend', report);
+    report();
+    return () => {
+      map.off('mousemove', move);
+      map.off('mouseout', out);
+      map.off('zoomend', report);
+    };
+  }, [map, onChange]);
+
   return null;
 }
 
@@ -57,38 +191,30 @@ L.Icon.Default.mergeOptions({
   shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
 });
 
-/* Generate polygon coordinates around a center point */
-function generateParcelPolygon(center, size = 0.001) {
-  const [lat, lng] = center;
-  const half = size / 2;
-  return [
-    [lat - half, lng - half],
-    [lat - half, lng + half],
-    [lat + half, lng + half],
-    [lat + half, lng - half],
-  ];
-}
-
-function generateBuildingPolygon(center, size = 0.0005) {
-  const [lat, lng] = center;
-  const half = size / 2;
-  return [
-    [lat - half, lng - half * 0.8],
-    [lat - half, lng + half * 0.8],
-    [lat + half * 0.7, lng + half],
-    [lat + half, lng - half * 0.3],
-  ];
-}
-
 /* Layer Panel component */
-function LayerPanel({ layers, onToggle, onClose }) {
-  const groupLabels = {
-    base: 'Base Layers',
-    buildings: 'Buildings',
-    infrastructure: 'Infrastructure',
-    elevation: 'Elevation',
-    survey: 'Survey'
-  };
+/** Why a layer cannot be switched on, or null when it can.
+ *
+ *  A row that does nothing has to say why it does nothing. The two cases are different
+ *  and a reader has to be able to tell them apart: this view does not draw that layer,
+ *  or the project holds nothing for it. Neither is a failure, and neither is a checkbox.
+ */
+function unavailableReason(layer, view, typeCounts) {
+  if (!layer.views.includes(view)) {
+    return `Not drawn in the ${view.toUpperCase()} view.`;
+  }
+  if (layer.unitType && !(typeCounts[layer.unitType] > 0)) {
+    return `This project holds no ${UNIT_TYPE_LABELS[layer.unitType].toLowerCase()} units.`;
+  }
+  return null;
+}
+
+function LayerPanel({ layers, view, typeCounts, onToggle, onOpacity, onClose }) {
+  const [filter, setFilter] = useState('');
+
+  const q = filter.trim().toLowerCase();
+  const groups = Object.entries(layers)
+    .map(([key, items]) => [key, items.filter((l) => l.label.toLowerCase().includes(q))])
+    .filter(([, items]) => items.length);
 
   return (
     <div className="context-panel">
@@ -99,136 +225,309 @@ function LayerPanel({ layers, onToggle, onClose }) {
         </button>
       </div>
       <div className="context-panel-body">
-        <input className="layer-search" placeholder="Search layers..." />
-        {Object.entries(layers).map(([groupKey, items]) => (
+        {/* The box had no handler at all: typing in it filtered nothing. */}
+        <input className="layer-search" placeholder="Filter layers…"
+               value={filter} onChange={(e) => setFilter(e.target.value)} />
+        {groups.map(([groupKey, items]) => (
           <div className="layer-group" key={groupKey}>
-            <div className="layer-group-title">{groupLabels[groupKey]}</div>
-            {items.map((layer) => (
-              <div className="layer-item" key={layer.id}>
-                <label>
-                  <input type="checkbox" checked={layer.checked}
-                    onChange={() => onToggle(groupKey, layer.id)} />
-                  <span>{layer.label}</span>
-                </label>
-                <div className="layer-opacity">
-                  <span>{layer.opacity}%</span>
-                  <button className={`opacity-toggle ${layer.checked ? 'active' : ''}`}
-                    onClick={() => onToggle(groupKey, layer.id)} />
+            <div className="layer-group-title">{LAYER_GROUP_LABELS[groupKey]}</div>
+            {items.map((layer) => {
+              const reason = unavailableReason(layer, view, typeCounts);
+              return (
+                <div className="layer-item" key={layer.id}
+                     style={reason ? { opacity: 0.45 } : undefined} title={reason ?? undefined}>
+                  <label style={reason ? { cursor: 'not-allowed' } : undefined}>
+                    <input type="checkbox" checked={layer.checked && !reason}
+                      disabled={Boolean(reason)}
+                      onChange={() => onToggle(groupKey, layer.id)} />
+                    <span>{layer.label}</span>
+                  </label>
+                  <div className="layer-opacity">
+                    <input type="range" min="0" max="100" step="5"
+                      value={layer.opacity} disabled={Boolean(reason) || !layer.checked}
+                      aria-label={`${layer.label} opacity`}
+                      onChange={(e) => onOpacity(groupKey, layer.id, Number(e.target.value))} />
+                    <span>{layer.opacity}%</span>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         ))}
+        {!groups.length && (
+          <div className="layer-group-title" style={{ textTransform: 'none' }}>
+            No layer matches “{filter}”.
+          </div>
+        )}
+        <div style={{ marginTop: 'var(--sp-4)', fontSize: 'var(--text-xs)',
+                      color: 'var(--text-muted)', lineHeight: 1.6 }}>
+          Only layers one of these views actually draws are listed. A project's rasters —
+          DEM, DSM, orthophoto — are registered as sources and read when heights are
+          derived, but nothing here renders a raster, so there is no switch for one.
+        </div>
       </div>
     </div>
   );
 }
 
 /* Property Panel component */
-function PropertyPanel({ property, onClose }) {
+/** Shoelace area of a ring already in the project CRS, which is metres. */
+function ringArea(ring) {
+  let a = 0;
+  for (let i = 0, n = ring.length - 1; i < n; i++) {
+    a += ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1];
+  }
+  return Math.abs(a) / 2;
+}
+
+const m = (v, digits = 2) =>
+  v === null || v === undefined || Number.isNaN(v) ? '—' : `${Number(v).toFixed(digits)} m`;
+
+/** Everything the project knows about one unit, assembled for the panel.
+ *
+ * The panel was written against a mock record and never given a real one: clicking a
+ * building set `selectedProperty` to null, so a screen that exists to answer "what is
+ * this" answered nothing. Every field below is read off the unit or its registry entry;
+ * nothing here is computed to fill a gap, and a value the project does not hold shows as
+ * an em dash rather than a plausible number.
+ */
+function describeUnit(unitId, ctx) {
+  const u = ctx.unitsById.get(unitId);
+  if (!u) return null;
+  const at = u.attributes ?? {};
+  const ring = u.footprint_2d?.coordinates?.[0] ?? [];
+  const area = ring.length ? ringArea(ring) : null;
+  const height = u.lower_limit != null && u.upper_limit != null
+    ? u.upper_limit - u.lower_limit : null;
+
+  const parentId = ctx.parentOf.get(unitId);
+  const parent = parentId ? ctx.unitsById.get(parentId) : null;
+  const children = (ctx.childrenOf.get(unitId) ?? [])
+    .map((id) => ctx.unitsById.get(id)).filter(Boolean);
+
+  return {
+    unit: u,
+    unitId,
+    label: u.ulpin ?? u.ulpin_provisional ?? unitId,
+    provisional: !u.ulpin && Boolean(u.ulpin_provisional),
+    unitType: u.unit_type,
+    status: u.status,
+    validationState: u.validation_state,
+    createdBy: u.created_by,
+    confidence: u.confidence_score,
+    recordedFrom: u.recorded_from,
+    lower: u.lower_limit,
+    upper: u.upper_limit,
+    height,
+    area,
+    volume: area != null && height != null ? area * height : null,
+    groundLevel: at.ground_level_m,
+    roofLevel: at.roof_level_m,
+    plinthOffset: at.plinth_offset_m,
+    rasterCoverage: at.raster_coverage,
+    parcelShare: at.parcel_share,
+    parentUlpin14: at.parent_ulpin_14,
+    floorIndex: at.floor_index,
+    floorHeight: at.floor_height_m,
+    floorCount: at.floor_count,
+    floorMethod: at.floor_count_method,
+    assumedStorey: at.assumed_storey_m,
+    localId: at.local_id,
+    heightsUnavailable: at.heights_unavailable,
+    parent: parent && {
+      unitId: parent.unit_id, type: parent.unit_type,
+      label: parent.ulpin ?? parent.ulpin_provisional ?? parent.unit_id,
+    },
+    children: children.map((c) => ({
+      unitId: c.unit_id, type: c.unit_type,
+      label: c.ulpin ?? c.ulpin_provisional ?? c.unit_id,
+      index: c.attributes?.floor_index,
+      lower: c.lower_limit, upper: c.upper_limit,
+    })).sort((x, y) => (y.lower ?? 0) - (x.lower ?? 0)),
+    sources: (u.source_ids ?? []).map(
+      (id) => ctx.sourcesById.get(id) ?? { source_id: id }),
+    findings: ctx.findingsByUnit.get(unitId) ?? [],
+  };
+}
+
+function Field({ label, value, hint, tone }) {
+  return (
+    <div className="property-field">
+      <span className="property-field-label" title={hint}>{label}</span>
+      <span className="property-field-value" style={tone ? { color: tone } : undefined}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+/** How many of a building's floors the lineage list shows before it says so. */
+const VISIBLE_CHILDREN = 12;
+
+function PropertyPanel({ property, onClose, onSelectUnit }) {
   if (!property) return null;
+  const p = property;
+  const isFloor = p.unitType === 'floor' || p.unitType === 'apartment';
+  const errors = p.findings.filter((f) => f.severity === 'error');
+  const warnings = p.findings.filter((f) => f.severity === 'warning');
+
   return (
     <div className="property-panel">
       <div className="property-panel-header">
-        <span className="property-panel-title">PROPERTY DETAILS</span>
+        <span className="property-panel-title">
+          {(UNIT_TYPE_LABELS[p.unitType] ?? p.unitType).toUpperCase()}
+        </span>
         <button className="context-panel-close" onClick={onClose}>
           <Icons.Close style={{ width: 14, height: 14 }} />
         </button>
       </div>
       <div className="property-panel-body">
         <div className="property-ulpin">
-          <span className="property-ulpin-code">{property.ulpin}</span>
-          <span className={`status-badge ${property.status.toLowerCase()}`}>{property.status}</span>
+          <span className="property-ulpin-code">{p.label}</span>
+          <span className={`status-badge ${p.status}`}>{p.status.replace(/_/g, ' ')}</span>
         </div>
-
-        <div className="property-field">
-          <span className="property-field-label">Property Type</span>
-          <span className="property-field-value">{property.propertyType}</span>
-        </div>
-        <div className="property-field">
-          <span className="property-field-label">Floor / Level</span>
-          <span className="property-field-value">{property.floor}</span>
-        </div>
-        <div className="property-field">
-          <span className="property-field-label">Status</span>
-          <span className="property-field-value" style={{ color: 'var(--status-success)' }}>{property.status}</span>
-        </div>
-        <div className="property-field">
-          <span className="property-field-label">Bottom Height</span>
-          <span className="property-field-value">{property.bottomHeight}</span>
-        </div>
-        <div className="property-field">
-          <span className="property-field-label">Top Height</span>
-          <span className="property-field-value">{property.topHeight}</span>
-        </div>
-        <div className="property-field">
-          <span className="property-field-label">Parent Building</span>
-          <span className="property-field-value" style={{ color: 'var(--accent-secondary)' }}>{property.parentBuilding}</span>
-        </div>
-        <div className="property-field">
-          <span className="property-field-label">Parent Parcel</span>
-          <span className="property-field-value" style={{ color: 'var(--accent-secondary)' }}>{property.parentParcel}</span>
-        </div>
-        <div className="property-field">
-          <span className="property-field-label">3D Shape Volume</span>
-          <span className="property-field-value">{property.volume}</span>
-        </div>
+        {p.provisional && (
+          <div className="property-note">
+            Provisional. The identifier is frozen to this unit only at approval, so it can
+            still change until then.
+          </div>
+        )}
 
         <div className="property-section">
-          <div className="property-section-title">Source Data</div>
-          <div>
-            {property.sourceData.map((s) => (
-              <span className="property-tag" key={s}>{s}</span>
+          <div className="property-section-title">Extent</div>
+          <Field label={isFloor ? 'Floor' : 'Storeys'}
+                 value={isFloor
+                   ? (p.floorIndex === undefined ? '—' : `index ${p.floorIndex}`)
+                   : (p.floorCount ?? '—')} />
+          <Field label="Base" value={m(p.lower, 2)}
+                 hint="Absolute level in the project's vertical datum" />
+          <Field label="Top" value={m(p.upper, 2)} />
+          <Field label="Height" value={m(p.height, 2)} />
+          <Field label="Footprint" value={p.area == null ? '—' : `${p.area.toFixed(1)} m²`} />
+          <Field label="Volume"
+                 value={p.volume == null ? '—' : `${p.volume.toFixed(0)} m³`}
+                 hint="Footprint area times height: this unit is a prism, so this is exact" />
+        </div>
+
+        {p.heightsUnavailable && (
+          <div className="property-note property-note-warn">{p.heightsUnavailable}</div>
+        )}
+
+        {!isFloor && (p.groundLevel != null || p.roofLevel != null) && (
+          <div className="property-section">
+            <div className="property-section-title">How this height was measured</div>
+            <Field label="Ground (DEM)" value={m(p.groundLevel, 2)} />
+            <Field label="Roof (DSM)" value={m(p.roofLevel, 2)} />
+            <Field label="Plinth offset" value={m(p.plinthOffset, 2)}
+                   hint="Indian construction sits above surrounding ground; a project setting, not a constant" />
+            <Field label="Raster coverage"
+                   value={p.rasterCoverage == null ? '—' : `${(p.rasterCoverage * 100).toFixed(1)}%`}
+                   tone={p.rasterCoverage != null && p.rasterCoverage < 0.6
+                     ? 'var(--status-warning)' : undefined}
+                   hint="Fraction of the footprint with valid elevation. Thin coverage is refused, not averaged." />
+          </div>
+        )}
+
+        {p.floorMethod && (
+          <div className="property-section">
+            <div className="property-section-title">Storey count is an estimate</div>
+            <div className="property-note property-note-warn">
+              Divided by an assumed {m(p.assumedStorey, 1)} storey height
+              ({p.floorMethod}). Nothing measured how this building is actually divided,
+              which is why the confidence below is low.
+            </div>
+          </div>
+        )}
+
+        <div className="property-section">
+          <div className="property-section-title">Record</div>
+          <Field label="Validation"
+                 value={p.validationState.replace(/_/g, ' ')}
+                 tone={p.validationState === 'failed' ? 'var(--status-error)'
+                   : p.validationState === 'passed' ? 'var(--status-success)'
+                   : 'var(--status-warning)'} />
+          <Field label="Errors" value={errors.length}
+                 tone={errors.length ? 'var(--status-error)' : 'var(--status-success)'} />
+          <Field label="Warnings" value={warnings.length}
+                 tone={warnings.length ? 'var(--status-warning)' : 'var(--status-success)'} />
+          <Field label="Created by" value={p.createdBy} />
+          <Field label="Confidence"
+                 value={p.confidence == null ? 'n/a — not AI-derived' : p.confidence.toFixed(2)}
+                 tone={p.confidence != null && p.confidence < 0.6
+                   ? 'var(--status-warning)' : undefined} />
+          {p.localId && <Field label="Source id" value={p.localId} />}
+          <Field label="Recorded"
+                 value={p.recordedFrom ? new Date(p.recordedFrom).toLocaleString() : '—'} />
+        </div>
+
+        {p.findings.length > 0 && (
+          <div className="property-section">
+            <div className="property-section-title">Findings</div>
+            {p.findings.map((f) => (
+              <div key={f.finding_id} className={`property-finding ${f.severity}`}>
+                <div className="property-finding-rule">{f.rule_id}</div>
+                <div className="property-finding-message">{f.message}</div>
+              </div>
             ))}
           </div>
-        </div>
-
-        <div className="property-field">
-          <span className="property-field-label">Accuracy</span>
-          <span className="property-field-value" style={{ color: 'var(--status-success)' }}>{property.accuracy}</span>
-        </div>
-        <div className="property-field">
-          <span className="property-field-label">AI Confidence</span>
-          <span className="property-field-value" style={{ color: 'var(--status-success)' }}>{property.aiConfidence}</span>
-        </div>
-        <div className="property-field">
-          <span className="property-field-label">Last Updated</span>
-          <span className="property-field-value">{property.lastUpdated}</span>
-        </div>
-        <div className="property-field">
-          <span className="property-field-label">Created By</span>
-          <span className="property-field-value">{property.createdBy}</span>
-        </div>
+        )}
 
         <div className="property-section">
-          <div className="property-section-title">Actions</div>
-          <div className="property-actions">
-            <button className="btn btn-secondary btn-sm">
-              <Icons.Map3D style={{ width: 14, height: 14 }} /> View in 3D
-            </button>
-            <button className="btn btn-secondary btn-sm">
-              <Icons.Pencil style={{ width: 14, height: 14 }} /> Edit
-            </button>
-            <button className="btn btn-secondary btn-sm">
-              <Icons.History style={{ width: 14, height: 14 }} /> Open History
-            </button>
-          </div>
-        </div>
-
-        <div className="property-section">
-          <div className="property-section-title">Related Properties</div>
-          {property.relatedProperties.map((rp) => (
-            <div className="related-property" key={rp.id}>
-              <div>
-                <div className="related-property-id">{rp.id}</div>
-                <div className="related-property-info">{rp.floor}</div>
+          <div className="property-section-title">Where this came from</div>
+          {p.sources.length === 0 && <div className="property-note">No source recorded.</div>}
+          {p.sources.map((s) => (
+            <div className="property-source" key={s.source_id}>
+              <div className="property-source-name">{s.name ?? s.source_id}</div>
+              <div className="property-source-meta">
+                {[s.source_type, s.provider, s.capture_date].filter(Boolean).join(' · ') || s.source_id}
               </div>
-              <span className={`status-badge ${rp.status.toLowerCase()}`}>{rp.status}</span>
+              <div className="property-source-meta">
+                {s.horizontal_accuracy_m == null
+                  ? 'accuracy not recorded — tolerances fall back to a default'
+                  : `± ${s.horizontal_accuracy_m} m horizontal, ± ${s.vertical_accuracy_m} m vertical`}
+              </div>
             </div>
           ))}
-          <div style={{ textAlign: 'center', marginTop: 8 }}>
-            <a style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-secondary)', cursor: 'pointer' }}>View All</a>
-          </div>
+        </div>
+
+        <div className="property-section">
+          <div className="property-section-title">Lineage</div>
+          {p.parent ? (
+            <button className="property-link" onClick={() => onSelectUnit(p.parent.unitId)}>
+              <span className="property-field-label">
+                {UNIT_TYPE_LABELS[p.parent.type] ?? p.parent.type}
+              </span>
+              <span className="property-field-value">{p.parent.label}</span>
+            </button>
+          ) : (
+            <Field label="Parent" value={p.parentUlpin14 ?? '—'}
+                   hint="The 14-character parcel identifier this unit was minted under" />
+          )}
+          {p.children.length > 0 && (
+            <>
+              <div className="property-field">
+                <span className="property-field-label">Contains</span>
+                <span className="property-field-value">{p.children.length}</span>
+              </div>
+              {p.children.slice(0, VISIBLE_CHILDREN).map((c) => (
+                <button className="property-link" key={c.unitId}
+                        onClick={() => onSelectUnit(c.unitId)}>
+                  <span className="property-field-label">
+                    {c.index === undefined ? UNIT_TYPE_LABELS[c.type] ?? c.type
+                      : c.index === 0 ? 'Ground' : `Level ${c.index}`}
+                  </span>
+                  <span className="property-field-value">{m(c.lower, 1)} – {m(c.upper, 1)}</span>
+                </button>
+              ))}
+              {p.children.length > VISIBLE_CHILDREN && (
+                <div className="property-note">
+                  Showing the {VISIBLE_CHILDREN} highest of {p.children.length}. The rest
+                  are in the record, not missing — a forty-storey tower listing twelve
+                  levels reads as a twelve-storey building.
+                </div>
+              )}
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -236,221 +535,242 @@ function PropertyPanel({ property, onClose }) {
 }
 
 /* 3D Scene with Three.js */
-function ThreeScene({ selectedBuilding, onSelectBuilding, activeFloor }) {
+/** Which layer switch governs each unit type in the scene.
+ *
+ *  Floors and apartments are absent on purpose: what draws them is which building is
+ *  open, not a layer, and the panel offers no switch that would claim otherwise.
+ */
+const SCENE_LAYER_OF_TYPE = {
+  land_parcel: 'parcels',
+  building: 'envelopes',
+  underground_feature: 'underground',
+  elevated_structure: 'elevated',
+};
+
+function ThreeScene({ selectedBuilding, onSelectBuilding, activeFloor, sceneLayers }) {
+  // Read the project here rather than take it as a prop: this is a sibling of the 2D
+  // map, not a child of it, and the hook is memoised on the document so both views work
+  // from one parse of it.
+  const { sceneUnits, projectExtent, withHeights } = useProjectGeometry();
+
   const canvasRef = useRef(null);
   const rendererRef = useRef(null);
   const sceneRef = useRef(null);
   const cameraRef = useRef(null);
   const animFrameRef = useRef(null);
+  const selectRef = useRef(onSelectBuilding);
+  selectRef.current = onSelectBuilding;
+
+  // Nothing to draw is a state this effect has to handle, not a reason to skip the hook.
+  // The empty-state return used to sit above these declarations, so the first project to
+  // gain heights changed the hook count between renders and React tore the view down.
+  const drawable = Boolean(projectExtent) && withHeights > 0;
 
   useEffect(() => {
-    let THREE;
     let mounted = true;
+    let controls = null;
+    let observer = null;
+    let onClick = null;
 
     async function initScene() {
-      THREE = await import('three');
+      if (!drawable) return;
+      const THREE = await import('three');
+      const { OrbitControls } = await import('three/examples/jsm/controls/OrbitControls.js');
       if (!mounted || !canvasRef.current) return;
 
+      const host = canvasRef.current;
       const scene = new THREE.Scene();
       scene.background = new THREE.Color(0x0a0e1a);
-      scene.fog = new THREE.FogExp2(0x0a0e1a, 0.015);
       sceneRef.current = scene;
 
-      const w = canvasRef.current.clientWidth;
-      const h = canvasRef.current.clientHeight;
-      const camera = new THREE.PerspectiveCamera(50, w / h, 0.1, 500);
-      camera.position.set(25, 20, 25);
-      camera.lookAt(0, 3, 0);
+      const cx = (projectExtent.minX + projectExtent.maxX) / 2;
+      const cz = (projectExtent.minY + projectExtent.maxY) / 2;
+      const groundZ = projectExtent.groundZ;
+      const spanX = projectExtent.maxX - projectExtent.minX;
+      const spanY = projectExtent.maxY - projectExtent.minY;
+      const span = Math.max(spanX, spanY, 20);
+
+      // No fog. Density here is a per-scene constant that silently encodes an assumed
+      // scene size, and this scene's size is whatever the project happens to be. The
+      // original 0.015 was tuned for a hand-built block tens of metres across; over a
+      // 689 m ward it left every building at exp(-(689*0.015)^2) of its colour, which is
+      // zero to about forty decimal places. Scaling it by the span was still wrong - the
+      // camera has to stand further out than the span to frame it, so the far side of a
+      // correctly-scaled scene still sat behind 98% fog. The view was never failing to
+      // draw the buildings; it was drawing them and painting the background over them.
+      // A depth cue is not worth a class of bug that looks exactly like a dead renderer.
+
+      const w = host.clientWidth || 800;
+      const h = host.clientHeight || 600;
+      const camera = new THREE.PerspectiveCamera(50, w / h, 0.5, span * 12);
       cameraRef.current = camera;
 
-      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      const renderer = new THREE.WebGLRenderer({ antialias: true });
       renderer.setSize(w, h);
-      renderer.setPixelRatio(window.devicePixelRatio);
-      renderer.shadowMap.enabled = true;
-      canvasRef.current.appendChild(renderer.domElement);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      host.appendChild(renderer.domElement);
       rendererRef.current = renderer;
 
-      // Lights
-      const ambientLight = new THREE.AmbientLight(0x404060, 0.6);
-      scene.add(ambientLight);
-      const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-      dirLight.position.set(20, 30, 20);
-      dirLight.castShadow = true;
+      const ambient = new THREE.AmbientLight(0x8899bb, 1.1);
+      scene.add(ambient);
+      const dirLight = new THREE.DirectionalLight(0xffffff, 1.4);
+      dirLight.position.set(span * 0.5, span * 0.8, span * 0.4);
       scene.add(dirLight);
-      const pointLight = new THREE.PointLight(0x00d4aa, 0.3, 50);
-      pointLight.position.set(-10, 15, -10);
-      scene.add(pointLight);
+      const fill = new THREE.DirectionalLight(0x00d4aa, 0.35);
+      fill.position.set(-span * 0.4, span * 0.3, -span * 0.5);
+      scene.add(fill);
 
-      // Ground plane
-      const groundGeom = new THREE.PlaneGeometry(60, 60);
-      const groundMat = new THREE.MeshStandardMaterial({
-        color: 0x111827, roughness: 0.9, metalness: 0.1
-      });
-      const ground = new THREE.Mesh(groundGeom, groundMat);
+      const groundSpan = span * 1.6;
+      const ground = new THREE.Mesh(
+        new THREE.PlaneGeometry(groundSpan, groundSpan),
+        new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.95 }));
       ground.rotation.x = -Math.PI / 2;
-      ground.receiveShadow = true;
       scene.add(ground);
+      const grid = new THREE.GridHelper(groundSpan, 48, 0x1e293b, 0x161d2d);
+      grid.position.y = 0.02;
+      scene.add(grid);
 
-      // Grid
-      const gridHelper = new THREE.GridHelper(60, 60, 0x1e293b, 0x1a2035);
-      gridHelper.position.y = 0.01;
-      scene.add(gridHelper);
+      const TYPE_COLOR = {
+        land_parcel: 0x00d4aa,
+        building: 0x0ea5e9,
+        floor: 0x8b5cf6,
+        apartment: 0xf59e0b,
+        underground_feature: 0xf59e0b,
+        elevated_structure: 0x38bdf8,
+      };
 
-      // Parcel boundaries (green outlines on ground)
-      const parcelPositions = [
-        { x: -8, z: -5, w: 8, d: 8 },
-        { x: 2, z: -3, w: 10, d: 10 },
-        { x: 14, z: -6, w: 6, d: 7 },
-      ];
-      parcelPositions.forEach(p => {
-        const shape = new THREE.Shape();
-        shape.moveTo(p.x, p.z);
-        shape.lineTo(p.x + p.w, p.z);
-        shape.lineTo(p.x + p.w, p.z + p.d);
-        shape.lineTo(p.x, p.z + p.d);
-        shape.lineTo(p.x, p.z);
-        const points = shape.getPoints();
-        const geom = new THREE.BufferGeometry().setFromPoints(
-          points.map(pt => new THREE.Vector3(pt.x, 0.05, pt.y))
-        );
-        const mat = new THREE.LineBasicMaterial({ color: 0x00d4aa, opacity: 0.4, transparent: true });
-        const line = new THREE.Line(geom, mat);
-        scene.add(line);
+      // The layer panel's switches, applied where the geometry is built. A checkbox is
+      // only a report of state if the thing it names is genuinely absent when it is off.
+      const shown = (type) => {
+        const key = SCENE_LAYER_OF_TYPE[type];
+        return key ? sceneLayers[key].on : true;
+      };
+      const alpha = (type) => {
+        const key = SCENE_LAYER_OF_TYPE[type];
+        return key ? sceneLayers[key].alpha : 1;
+      };
 
-        // Parcel labels
-        const labelPos = new THREE.Vector3(p.x + p.w / 2, 0.1, p.z + p.d / 2);
-        const labelId = `P${183 + parcelPositions.indexOf(p)}`;
-        // We'll skip canvas labels for simplicity - the buildings serve as indicators
-      });
-
-      // Buildings
-      const buildingData = [
-        { id: 'B318', x: -5, z: -2, w: 4, d: 3.5, floors: 8, basement: 1, color: 0x00d4aa },
-        { id: 'B320', x: 4, z: 0, w: 5.5, d: 4, floors: 5, basement: 2, color: 0x0ea5e9 },
-        { id: 'B315', x: 15, z: -3, w: 3, d: 3, floors: 6, basement: 1, color: 0x8b5cf6 },
-      ];
-
-      const floorHeight = 3;
-
-      buildingData.forEach(bd => {
-        // Basement floors
-        for (let b = 0; b < bd.basement; b++) {
-          const y = -(b + 1) * floorHeight;
-          const geom = new THREE.BoxGeometry(bd.w, floorHeight - 0.15, bd.d);
-          const mat = new THREE.MeshStandardMaterial({
-            color: 0xf59e0b, opacity: 0.3, transparent: true, roughness: 0.7
-          });
-          const mesh = new THREE.Mesh(geom, mat);
-          mesh.position.set(bd.x, y + floorHeight / 2, bd.z);
-          mesh.castShadow = true;
-          mesh.userData = { buildingId: bd.id, floor: -(b + 1), type: 'basement' };
-          scene.add(mesh);
-
-          // wireframe
-          const wireGeo = new THREE.EdgesGeometry(geom);
-          const wireMat = new THREE.LineBasicMaterial({ color: 0xf59e0b, opacity: 0.5, transparent: true });
-          const wire = new THREE.LineSegments(wireGeo, wireMat);
-          wire.position.copy(mesh.position);
-          scene.add(wire);
+      // Parcels as outlines on the ground, so a building always sits inside something.
+      if (shown('land_parcel')) {
+        for (const u of sceneUnits.filter((x) => x.unit_type === 'land_parcel')) {
+          const pts = u.ringMetres.map(([x, y]) => new THREE.Vector3(x - cx, 0.06, -(y - cz)));
+          scene.add(new THREE.Line(
+            new THREE.BufferGeometry().setFromPoints(pts),
+            new THREE.LineBasicMaterial({ color: TYPE_COLOR.land_parcel,
+                                          opacity: 0.5 * alpha('land_parcel'),
+                                          transparent: true })));
         }
-
-        // Above-ground floors
-        for (let f = 0; f < bd.floors; f++) {
-          const y = f * floorHeight;
-          const isSelected = selectedBuilding === bd.id;
-          const isActiveFloor = isSelected && activeFloor === f + 1;
-
-          const geom = new THREE.BoxGeometry(bd.w, floorHeight - 0.15, bd.d);
-          const opacity = isSelected ? (isActiveFloor ? 0.9 : 0.5) : 0.6;
-          const color = isActiveFloor ? 0x00ff88 : bd.color;
-
-          const mat = new THREE.MeshStandardMaterial({
-            color, opacity, transparent: true, roughness: 0.5, metalness: 0.1
-          });
-          const mesh = new THREE.Mesh(geom, mat);
-          mesh.position.set(bd.x, y + floorHeight / 2, bd.z);
-          mesh.castShadow = true;
-          mesh.userData = { buildingId: bd.id, floor: f + 1 };
-          scene.add(mesh);
-
-          // wireframe
-          const wireGeo = new THREE.EdgesGeometry(geom);
-          const wireMat = new THREE.LineBasicMaterial({
-            color: isActiveFloor ? 0x00ff88 : bd.color,
-            opacity: isActiveFloor ? 1 : 0.4, transparent: true
-          });
-          const wire = new THREE.LineSegments(wireGeo, wireMat);
-          wire.position.copy(mesh.position);
-          scene.add(wire);
-        }
-
-        // Building ID label using a thin bar on top
-        const topY = bd.floors * floorHeight;
-        const labelGeo = new THREE.BoxGeometry(bd.w, 0.08, bd.d);
-        const labelMat = new THREE.MeshStandardMaterial({ color: bd.color, emissive: bd.color, emissiveIntensity: 0.3 });
-        const labelMesh = new THREE.Mesh(labelGeo, labelMat);
-        labelMesh.position.set(bd.x, topY + 0.1, bd.z);
-        scene.add(labelMesh);
-      });
-
-      // Underground pipes
-      const pipeGeo = new THREE.CylinderGeometry(0.15, 0.15, 30, 8);
-      const pipeMat = new THREE.MeshStandardMaterial({ color: 0xf59e0b, opacity: 0.35, transparent: true });
-      const pipe = new THREE.Mesh(pipeGeo, pipeMat);
-      pipe.rotation.z = Math.PI / 2;
-      pipe.position.set(0, -2, 5);
-      scene.add(pipe);
-
-      const pipe2Geo = new THREE.CylinderGeometry(0.12, 0.12, 20, 8);
-      const pipe2 = new THREE.Mesh(pipe2Geo, pipeMat.clone());
-      pipe2.rotation.x = Math.PI / 2;
-      pipe2.position.set(-5, -3, 0);
-      scene.add(pipe2);
-
-      // Elevated road
-      const roadGeo = new THREE.BoxGeometry(35, 0.3, 2);
-      const roadMat = new THREE.MeshStandardMaterial({ color: 0x3b82f6, opacity: 0.25, transparent: true });
-      const road = new THREE.Mesh(roadGeo, roadMat);
-      road.position.set(0, 12, -10);
-      scene.add(road);
-      // Road supports
-      for (let i = -15; i <= 15; i += 6) {
-        const pillarGeo = new THREE.BoxGeometry(0.3, 12, 0.3);
-        const pillar = new THREE.Mesh(pillarGeo, roadMat.clone());
-        pillar.position.set(i, 6, -10);
-        scene.add(pillar);
       }
 
-      // Camera auto-rotation
-      let angle = Math.PI / 4;
-      const rotateSpeed = 0.002;
-      const radius = 35;
+      // Every unit with a vertical extent becomes the prism it actually is: its own
+      // footprint, extruded between its own limits. A unit whose heights are unknown is
+      // not drawn at all rather than given an invented one.
+      //
+      // Buildings always; floors only for the one selected. A ward of 910 buildings is
+      // 5,000 floors, and drawing them all is ~12,000 meshes - the scene stops being
+      // navigable, and a solid block of overlapping translucent boxes shows less than
+      // the envelopes do. Click a building to open its stack.
+      const withHeight = (u) => u.lower_limit != null && u.upper_limit != null;
+      const solid = sceneUnits.filter((u) => {
+        if (u.unit_type === 'land_parcel' || !withHeight(u)) return false;
+        if (u.unit_type === 'floor' || u.unit_type === 'apartment') {
+          return u.parent_unit_id === selectedBuilding;
+        }
+        return shown(u.unit_type);
+      });
+
+      const pickable = [];
+      for (const u of solid) {
+        const shape = new THREE.Shape();
+        u.ringMetres.forEach(([x, y], i) => {
+          const px = x - cx, pz = -(y - cz);
+          if (i === 0) shape.moveTo(px, pz); else shape.lineTo(px, pz);
+        });
+        const height = Math.max(u.upper_limit - u.lower_limit, 0.05);
+        const geom = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false });
+        geom.rotateX(-Math.PI / 2);
+
+        const selected = selectedBuilding === u.unit_id || activeFloor === u.unit_id;
+        const isFloor = u.unit_type === 'floor' || u.unit_type === 'apartment';
+        const color = selected ? 0x00ff88 : (TYPE_COLOR[u.unit_type] ?? 0x64748b);
+        // Buildings are opaque by default. Nine hundred translucent boxes stacked
+        // front-to-back average out to one flat wash of colour, and depth is the whole
+        // point here — but the layer's own opacity is the operator's call, not ours.
+        const opacity = isFloor ? 0.35 : alpha(u.unit_type);
+        const mesh = new THREE.Mesh(geom, new THREE.MeshStandardMaterial({
+          color, roughness: 0.55, metalness: 0.05,
+          transparent: isFloor || opacity < 1, opacity,
+          emissive: color, emissiveIntensity: selected ? 0.45 : 0.06,
+        }));
+        mesh.position.y = u.lower_limit - groundZ;
+        mesh.userData = { unitId: u.unit_id, label: u.label, type: u.unit_type,
+                          buildingId: u.unit_type === 'building' ? u.unit_id : u.parent_unit_id };
+        scene.add(mesh);
+        // Floors of the open building are pickable too: the stack is drawn, so a
+        // click on one has to reach it rather than fall through to the envelope.
+        pickable.push(mesh);
+
+        const edges = new THREE.LineSegments(
+          new THREE.EdgesGeometry(geom),
+          new THREE.LineBasicMaterial({ color: selected ? 0x00ff88 : 0x1b3a52,
+                                        opacity: 0.5 * opacity, transparent: true }));
+        edges.position.y = mesh.position.y;
+        scene.add(edges);
+      }
+
+      // Frame the project by fitting its bounding sphere to the field of view, rather
+      // than guessing a multiple of its width. At 689 m across, the old radius put the
+      // camera 620 m out and pointed it at a spot five metres above the origin.
+      const radius = Math.hypot(spanX, spanY) / 2;
+      const dist = (radius / Math.sin((camera.fov * Math.PI / 180) / 2)) * 0.62;
+      camera.position.set(dist * 0.7, dist * 0.6, dist * 0.7);
+
+      controls = new OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.08;
+      controls.target.set(0, 0, 0);
+      controls.maxPolarAngle = Math.PI / 2.05;   // never go below the ground plane
+      controls.minDistance = 15;
+      controls.maxDistance = span * 4;
+      controls.update();
+
+      // The HUD has said "Mode: Orbit" since the first mock. Nothing orbited on demand:
+      // the camera flew a fixed circle and ignored the mouse entirely, so a click on a
+      // building did nothing and its floor stack could never be opened.
+      const raycaster = new THREE.Raycaster();
+      const pointer = new THREE.Vector2();
+      let downAt = null;
+      const onDown = (e) => { downAt = [e.clientX, e.clientY]; };
+      onClick = (e) => {
+        // An orbit drag ends in a click event too; only treat a stationary press as a pick.
+        if (!downAt || Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 4) return;
+        const rect = renderer.domElement.getBoundingClientRect();
+        pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+        raycaster.setFromCamera(pointer, camera);
+        const hit = raycaster.intersectObjects(pickable, false)[0];
+        if (hit) selectRef.current?.(hit.object.userData.unitId);
+      };
+      renderer.domElement.addEventListener('pointerdown', onDown);
+      renderer.domElement.addEventListener('click', onClick);
 
       function animate() {
         animFrameRef.current = requestAnimationFrame(animate);
-        angle += rotateSpeed;
-        camera.position.x = Math.cos(angle) * radius;
-        camera.position.z = Math.sin(angle) * radius;
-        camera.position.y = 20;
-        camera.lookAt(0, 5, 0);
+        controls.update();
         renderer.render(scene, camera);
       }
       animate();
 
-      // Handle resize
-      const handleResize = () => {
-        if (!canvasRef.current) return;
-        const w = canvasRef.current.clientWidth;
-        const h = canvasRef.current.clientHeight;
-        camera.aspect = w / h;
+      // The window never resizes when the Layers panel slides in, but the canvas does.
+      // Watching the element rather than the window keeps the aspect honest either way.
+      observer = new ResizeObserver(() => {
+        const cw = host.clientWidth, ch = host.clientHeight;
+        if (!cw || !ch) return;
+        camera.aspect = cw / ch;
         camera.updateProjectionMatrix();
-        renderer.setSize(w, h);
-      };
-      window.addEventListener('resize', handleResize);
-
-      return () => {
-        window.removeEventListener('resize', handleResize);
-      };
+        renderer.setSize(cw, ch);
+      });
+      observer.observe(host);
     }
 
     initScene();
@@ -458,39 +778,60 @@ function ThreeScene({ selectedBuilding, onSelectBuilding, activeFloor }) {
     return () => {
       mounted = false;
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
-      if (rendererRef.current) {
-        rendererRef.current.dispose();
-        if (canvasRef.current && rendererRef.current.domElement.parentNode === canvasRef.current) {
-          canvasRef.current.removeChild(rendererRef.current.domElement);
+      observer?.disconnect();
+      controls?.dispose();
+      const r = rendererRef.current;
+      if (r) {
+        if (onClick) r.domElement.removeEventListener('click', onClick);
+        r.dispose();
+        if (canvasRef.current && r.domElement.parentNode === canvasRef.current) {
+          canvasRef.current.removeChild(r.domElement);
         }
+        rendererRef.current = null;
       }
     };
-  }, [selectedBuilding, activeFloor]);
+  }, [selectedBuilding, activeFloor, sceneUnits, projectExtent, drawable, sceneLayers]);
+
+  // A 3D view of units that have no third dimension is an empty grid, and an empty grid
+  // is indistinguishable from a broken renderer. Say which it is. The heights are
+  // genuinely absent - FR-03 forbids inventing them - so this is the honest state, not
+  // an error, and it names the step that fills them in.
+  if (projectExtent && withHeights === 0) {
+    return (
+      <div className="scene-empty">
+        <div className="scene-empty-title">No heights to draw yet</div>
+        <div className="scene-empty-body">
+          This project has {sceneUnits.filter((u) => u.unit_type === 'building').length} buildings
+          and no elevation, so nothing has a vertical extent. That is the system refusing
+          to invent one, not a failure to render.
+          <br /><br />
+          Add a DEM and a DSM on the Upload Data screen, then run Floor segmentation under
+          AI Tools: the buildings get a height range and a floor stack, and this view fills in.
+        </div>
+      </div>
+    );
+  }
 
   return <div ref={canvasRef} className="three-canvas-wrapper" />;
 }
 
 /* Floor slider for 3D view */
-function FloorSlider({ building, activeFloor, onFloorChange }) {
-  if (!building) return null;
-  const floors = [];
-  if (building.basement) {
-    for (let b = building.basement; b >= 1; b--) floors.push({ label: `B${b}`, value: -b });
-  }
-  for (let f = 1; f <= building.floors; f++) {
-    floors.push({ label: f === building.floors ? 'Roof' : `${f}F`, value: f });
-  }
-  floors.reverse();
-
+/** Driven by the floors that exist, not by a `floors` count on a mock building record.
+ *  A derived building carries no such field, so the old slider rendered zero buttons for
+ *  every real project - a control that is present, empty and silent. */
+function FloorSlider({ floors, activeFloor, onFloorChange }) {
+  if (!floors.length) return null;
+  const ordered = [...floors].sort((a, b) => (b.lower_limit ?? 0) - (a.lower_limit ?? 0));
   return (
     <div className="floor-slider">
-      {floors.map((f) => (
+      {ordered.map((f, i) => (
         <button
-          key={f.value}
-          className={`floor-btn${activeFloor === f.value ? ' active' : ''}`}
-          onClick={() => onFloorChange(f.value)}
+          key={f.unit_id}
+          className={`floor-btn${activeFloor === f.unit_id ? ' active' : ''}`}
+          title={f.label}
+          onClick={() => onFloorChange(activeFloor === f.unit_id ? null : f.unit_id)}
         >
-          {f.label}
+          {i === 0 ? 'Roof' : `${ordered.length - 1 - i}F`}
         </button>
       ))}
     </div>
@@ -502,8 +843,11 @@ export default function MapPage({ project, view = '2d' }) {
   const [showLayers, setShowLayers] = useState(true);
   const [layers, setLayers] = useState(MAP_LAYERS);
   const [selectedProperty, setSelectedProperty] = useState(null);
-  const [selectedBuildingId, setSelectedBuildingId] = useState('B318');
-  const [activeFloor, setActiveFloor] = useState(4);
+  // 'B318' was a mock identifier from the sample scene. It matched no real unit, so the
+  // HUD reported a selection that did not exist and the floor stack had nothing to open.
+  const [selectedBuildingId, setSelectedBuildingId] = useState(null);
+  const [activeFloor, setActiveFloor] = useState(null);
+  const [readout, setReadout] = useState(null);
 
   useEffect(() => {
     const handleToggleLayers = () => setShowLayers(prev => !prev);
@@ -511,27 +855,84 @@ export default function MapPage({ project, view = '2d' }) {
     return () => window.removeEventListener('toggle-layers', handleToggleLayers);
   }, []);
 
-  const center = [12.9720, 77.5950];
-
-  const toggleLayer = (group, id) => {
+  const setLayer = (group, id, change) => {
     setLayers(prev => ({
       ...prev,
-      [group]: prev[group].map(l => l.id === id ? { ...l, checked: !l.checked } : l)
+      [group]: prev[group].map(l => l.id === id ? { ...l, ...change(l) } : l)
     }));
   };
+  const toggleLayer = (group, id) => setLayer(group, id, l => ({ checked: !l.checked }));
+  const setOpacity = (group, id, opacity) => setLayer(group, id, () => ({ opacity }));
 
-  const handleBuildingClick = (building) => {
-    setSelectedBuildingId(building.id);
-    // Details come from the unit that was actually picked, or the panel stays shut.
-    setSelectedProperty(null);
+  const geometry = useProjectGeometry();
+  const { parcels: livePercels, buildings: liveBuildings, bounds, typeCounts,
+          sceneUnits, projectExtent, withHeights } = geometry;
+
+  // One flat view of the switches, so a renderer asks "is this on" rather than hunting
+  // the group a layer happens to live in.
+  const layerById = useMemo(
+    () => Object.fromEntries(Object.values(layers).flat().map(l => [l.id, l])), [layers]);
+  const drawn = (id) => {
+    const l = layerById[id];
+    if (!l || !l.checked) return false;
+    // A toggle for a layer the project has nothing for is disabled in the panel; this is
+    // the same rule at the point of drawing, so the two cannot drift apart.
+    return !l.unitType || typeCounts[l.unitType] > 0;
   };
+  const alpha = (id) => (layerById[id]?.opacity ?? 100) / 100;
 
-  const { parcels: livePercels, buildings: liveBuildings, bounds } = useProjectGeometry();
-  const selectedBuildingData = liveBuildings.find(b => b.unit.unit_id === selectedBuildingId)?.unit;
+  // Memoised because the 3D scene is rebuilt whenever this changes: a new object every
+  // render would tear down and re-extrude every mesh on every keystroke elsewhere.
+  const sceneLayers = useMemo(() => ({
+    parcels: { on: drawn('parcels'), alpha: alpha('parcels') },
+    envelopes: { on: drawn('envelopes'), alpha: alpha('envelopes') },
+    underground: { on: drawn('underground'), alpha: alpha('underground') },
+    elevated: { on: drawn('elevated'), alpha: alpha('elevated') },
+  }), [layerById, typeCounts]);   // `drawn` and `alpha` read only these two
+
+  // Held stable so that a re-render — the cursor readout updates ten times a second —
+  // does not restyle every polygon in the project on each one.
+  const parcelStyle = useMemo(() => ({
+    color: '#00d4aa', weight: 1.5, fillColor: '#00d4aa',
+    opacity: alpha('parcels'), fillOpacity: 0.08 * alpha('parcels'),
+    dashArray: '4 4',
+  }), [layerById]);
+  const buildingStyle = useMemo(() => ({
+    color: '#0ea5e9', weight: 2, fillColor: '#0ea5e9',
+    opacity: alpha('footprints'), fillOpacity: 0.15 * alpha('footprints'),
+  }), [layerById]);
+
+  // Selecting anything opens its record. A 3D view whose click does nothing is a
+  // picture of a cadastre rather than a cadastre: the geometry is the index, and the
+  // record behind it is the thing a land system exists to show.
+  const selectUnit = useCallback((unitId) => {
+    const u = geometry.unitsById.get(unitId);
+    if (!u) return;
+    if (u.unit_type === 'floor' || u.unit_type === 'apartment') {
+      const parent = geometry.parentOf.get(unitId);
+      if (parent) setSelectedBuildingId(parent);   // keep its stack open behind it
+      setActiveFloor(unitId);
+    } else {
+      setSelectedBuildingId(unitId);
+      setActiveFloor(null);   // the previous building's floor is not this building's
+    }
+    setSelectedProperty(describeUnit(unitId, geometry));
+  }, [geometry]);
+  // What the HUD reports has to come from the scene, not from a remembered string.
+  const sceneBuildingCount = sceneUnits.filter((u) => u.unit_type === 'building').length;
+  const selectedBuildingLabel = sceneUnits.find((u) => u.unit_id === selectedBuildingId)?.label
+    ?? selectedBuildingId;
+  const selectedFloors = sceneUnits.filter(
+    (u) => u.parent_unit_id === selectedBuildingId && u.unit_type === 'floor');
+  const selectedFloorCount = selectedFloors.length;
 
   return (
     <>
-      {showLayers && <LayerPanel layers={layers} onToggle={toggleLayer} onClose={() => setShowLayers(false)} />}
+      {showLayers && (
+        <LayerPanel layers={layers} view={view} typeCounts={typeCounts}
+                    onToggle={toggleLayer} onOpacity={setOpacity}
+                    onClose={() => setShowLayers(false)} />
+      )}
       <div className="map-container">
         <div className="map-tabs">
           <button className={`map-tab${view === '2d' ? ' active' : ''}`}
@@ -550,7 +951,9 @@ export default function MapPage({ project, view = '2d' }) {
               </button>
             )}
             {[Icons.Cursor, Icons.Crosshair, Icons.Ruler, Icons.Pencil, Icons.Move].map((Ic, i) => (
-              <button key={i} className="map-floating-btn" style={{ width: 26, height: 26 }}>
+              <button key={i} className="map-floating-btn" disabled
+                      title="Map tools are not built yet"
+                      style={{ width: 26, height: 26 }}>
                 <Ic style={{ width: 13, height: 13 }} />
               </button>
             ))}
@@ -558,32 +961,52 @@ export default function MapPage({ project, view = '2d' }) {
         </div>
 
         <div className="map-view">
-          {view === '2d' ? (
+          {view === '2d' && !bounds ? (
+            // The map used to open at [12.9720, 77.5950] zoom 17 — a corner of Bengaluru
+            // — whatever the project was and whether or not it held any geometry. A map
+            // centred on a city the project has nothing to do with is not a neutral
+            // starting point; it is a claim about where this data is.
+            <div className="scene-empty">
+              <div className="scene-empty-title">Nothing to place on a map yet</div>
+              <div className="scene-empty-body">
+                This project holds no geometry, so there is no extent to open the map at.
+                A map has to be centred somewhere, and anywhere chosen for it would be a
+                guess about where your data is.
+                <br /><br />
+                Add a parcel layer or building footprints on the Upload Data screen. The
+                map opens on the project's own bounds as soon as it has some.
+              </div>
+            </div>
+          ) : view === '2d' ? (
             <>
-              <MapContainer center={center} zoom={17} style={{ height: '100%', width: '100%' }}
+              {/* Framed on the project's own extent. `bounds` is what the units say,
+                  so the first thing on screen is this project rather than a place. */}
+              <MapContainer bounds={bounds} boundsOptions={{ padding: [40, 40] }}
+                style={{ height: '100%', width: '100%' }}
                 zoomControl={true} attributionControl={true}>
                 {/* OpenStreetMap, which needs no key. CARTO's dark tiles now require
                     registration and serve an "API KEY REQUIRED" watermark across every
                     tile without one — not something to discover during a demo. The dark
                     treatment is a CSS filter on the tile pane instead. */}
-                <TileLayer
-                  url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-                  className="basemap-dark"
-                  maxZoom={19}
-                  attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-                />
+                {drawn('basemap') && (
+                  <TileLayer
+                    url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+                    className="basemap-dark"
+                    maxZoom={19}
+                    opacity={alpha('basemap')}
+                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                  />
+                )}
 
                 <FitToProject bounds={bounds} />
+                <MapReadout onChange={setReadout} />
 
                 {/* Parcel polygons, from the project */}
-                {livePercels.map(({ unit: parcel, positions }) => (
+                {drawn('parcels') && livePercels.map(({ unit: parcel, positions }) => (
                   <Polygon
                     key={parcel.unit_id}
                     positions={positions}
-                    pathOptions={{
-                      color: '#00d4aa', weight: 1.5, fillColor: '#00d4aa',
-                      fillOpacity: 0.08, dashArray: '4 4'
-                    }}
+                    pathOptions={parcelStyle}
                   >
                     <Popup>
                       <div style={{ fontFamily: 'Inter, sans-serif' }}>
@@ -596,16 +1019,13 @@ export default function MapPage({ project, view = '2d' }) {
                 ))}
 
                 {/* Building footprints, from the project */}
-                {liveBuildings.map(({ unit: building, positions }) => (
+                {drawn('footprints') && liveBuildings.map(({ unit: building, positions }) => (
                   <Polygon
                     key={building.unit_id}
                     positions={positions}
-                    pathOptions={{
-                      color: '#0ea5e9', weight: 2, fillColor: '#0ea5e9',
-                      fillOpacity: 0.15
-                    }}
+                    pathOptions={buildingStyle}
                     eventHandlers={{
-                      click: () => handleBuildingClick(building)
+                      click: () => selectUnit(building.unit_id)
                     }}
                   >
                     <Popup>
@@ -626,28 +1046,39 @@ export default function MapPage({ project, view = '2d' }) {
               </MapContainer>
 
               <div className="map-info-overlay">
-                <span>Lat: 12.9716°</span>
-                <span>Lon: 77.5946°</span>
-                <span>Elev: 920.45 m</span>
-                <span>Scale 1:2,500</span>
+                {readout?.lat == null ? (
+                  <span>Move the pointer over the map for a position</span>
+                ) : (
+                  <>
+                    <span>Lat: {readout.lat.toFixed(5)}°</span>
+                    <span>Lon: {readout.lng.toFixed(5)}°</span>
+                  </>
+                )}
+                <span>Zoom {readout?.zoom ?? '—'}</span>
+                <span>
+                  {readout ? `${readout.metresPerPixel.toFixed(2)} m/px` : '—'}
+                </span>
               </div>
             </>
           ) : (
             <>
               <ThreeScene
                 selectedBuilding={selectedBuildingId}
-                onSelectBuilding={setSelectedBuildingId}
+                onSelectBuilding={selectUnit}
                 activeFloor={activeFloor}
+                sceneLayers={sceneLayers}
               />
               <FloorSlider
-                building={selectedBuildingData}
+                floors={selectedFloors}
                 activeFloor={activeFloor}
-                onFloorChange={setActiveFloor}
+                onFloorChange={(id) => (id ? selectUnit(id) : setActiveFloor(null))}
               />
               <div className="map-info-overlay">
-                <span>Building: {selectedBuildingId}</span>
-                <span>Floor: {activeFloor}</span>
-                <span>Mode: Orbit</span>
+                <span>{selectedBuildingId
+                  ? `Building: ${selectedBuildingLabel}`
+                  : `${sceneBuildingCount} buildings \u00b7 click one to open its floors`}</span>
+                {selectedBuildingId && <span>Floors: {selectedFloorCount}</span>}
+                <span>Drag to orbit · scroll to zoom</span>
               </div>
             </>
           )}
@@ -655,7 +1086,8 @@ export default function MapPage({ project, view = '2d' }) {
       </div>
 
       {selectedProperty && (
-        <PropertyPanel property={selectedProperty} onClose={() => setSelectedProperty(null)} />
+        <PropertyPanel property={selectedProperty} onSelectUnit={selectUnit}
+                       onClose={() => setSelectedProperty(null)} />
       )}
     </>
   );

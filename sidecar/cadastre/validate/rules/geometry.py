@@ -76,18 +76,30 @@ def heights_unavailable(ctx, run_id: str) -> list[Finding]:
 def duplicate(ctx, run_id: str) -> list[Finding]:
     """Same normalised footprint AND the same z-range. Either alone is legitimate:
     every floor of a building shares one footprint.
+
+    A unit and its own parent are exempt. A single-storey building has exactly one floor,
+    and that floor necessarily has the building's footprint and the building's height
+    range - the two coincide because the building *is* one storey, not because a record
+    was entered twice. Flagging it made every single-storey building in a project
+    unapprovable, which over rural India is most of them.
+
+    The exemption is deliberately narrow: only the pair actually related by containment.
+    Two sibling floors at the same level, or two buildings entered twice, still collide.
     """
     seen: dict[tuple, str] = {}
     out = []
     for uid, u in ctx.units.items():
         key = (hashlib.sha256(to_wkb(ctx.geoms[uid].normalize())).hexdigest(),
                u.lower_limit, u.upper_limit)
-        if key in seen:
-            out.append(finding(
-                run_id, RuleId.GEOM_DUPLICATE, Severity.ERROR, uid,
-                f"Identical footprint and height range to {seen[key]}.",
-                related=[seen[key]], geometry=u.footprint_2d,
-                action="Merge the duplicates or correct one of the height ranges."))
-        else:
+        first = seen.get(key)
+        if first is None:
             seen[key] = uid
+            continue
+        if ctx.parent.get(uid) == first or ctx.parent.get(first) == uid:
+            continue                    # a unit and the thing containing it
+        out.append(finding(
+            run_id, RuleId.GEOM_DUPLICATE, Severity.ERROR, uid,
+            f"Identical footprint and height range to {first}.",
+            related=[first], geometry=u.footprint_2d,
+            action="Merge the duplicates or correct one of the height ranges."))
     return out

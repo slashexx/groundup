@@ -256,3 +256,316 @@ def test_a_storey_above_the_format_ceiling_is_left_unidentified(project):
     unnamed = [store.get_unit(project, row["unit_id"]) for row in project.execute(
         "SELECT unit_id FROM unit WHERE unit_type='floor' AND ulpin_provisional IS NULL")]
     assert [u.attributes["floor_index"] for u in unnamed] == [100]
+
+
+# --- deriving twice is not deriving twice as much -------------------------------------
+
+def test_re_deriving_a_building_updates_its_floors_rather_than_adding_a_second_stack(project):
+    """The floor stack is replaced in place, not appended to.
+
+    `test_a_floor_identifier_is_allocated_once_and_survives_a_second_derive` above never
+    exercised this: the second run finds no building with a NULL height and does nothing
+    at all, so it asserts that a no-op changes nothing. The path that matters is a
+    building whose heights are gone and are derived again - which is what happened in
+    practice when registering a DEM re-ingested the footprint layer and nulled them.
+    Floors took a fresh uuid4 per call, so the project went from 5,003 floors to 10,006
+    while the report said `floors_created: 5003` both times.
+    """
+    derive.derive_heights(project, default_floor_count=7)
+    first = {row["unit_id"] for row in project.execute(
+        "SELECT unit_id FROM unit WHERE unit_type='floor'")}
+    assert len(first) == 7
+
+    # Exactly what a re-ingest does to a building: the source has no elevation in it.
+    project.execute("UPDATE unit SET lower_limit=NULL, upper_limit=NULL "
+                    "WHERE unit_type='building'")
+    project.commit()
+
+    report = derive.derive_heights(project, default_floor_count=7)
+    assert report.floors_created == 7
+
+    second = {row["unit_id"] for row in project.execute(
+        "SELECT unit_id FROM unit WHERE unit_type='floor'")}
+    assert second == first, "the same seven floors, not seven more"
+
+
+def test_two_buildings_do_not_share_floor_ids(project):
+    """Determinism must not collapse two buildings' ground floors into one unit."""
+    from cadastre.extrude import floors as flr
+
+    derive.derive_heights(project, default_floor_count=3)
+    a = store.get_unit(project, "BLD-1")
+    b = store.get_unit(project, "BLD-1")
+    b.unit_id = "a-different-building"
+    _units, _rels, _sources, settings = store.load_project(project)
+    assert not ({f.unit_id for f in flr.split(a, 3, settings)}
+                & {f.unit_id for f in flr.split(b, 3, settings)})
+
+
+# --- the app should not need to be told twice ----------------------------------------
+
+def test_registering_elevation_extrudes_the_buildings_without_a_second_call(project):
+    """Adding a DEM and a DSM has one consequence the operator wants. Do it.
+
+    Registering elevation through the Upload Data screen reported success and left the
+    3D view empty, with nothing saying a step remained: `derive` lived behind a separate
+    button on another screen. The elevation is the measurement; extruding from it is not
+    a judgement call.
+    """
+    from cadastre.api import _derive_after_elevation
+
+    assert project.execute(
+        "SELECT count(*) FROM unit WHERE unit_type='building' AND lower_limit IS NULL"
+    ).fetchone()[0] == 1
+
+    result = _derive_after_elevation(project)
+    assert result["heights_derived"] == 1
+
+    b = store.get_unit(project, "BLD-1")
+    assert b.lower_limit is not None and b.upper_limit is not None
+
+
+def test_registering_elevation_creates_no_floor_units_at_all(project):
+    """The envelope is measured; its interior is not, and must not be stated.
+
+    This test was written once, failed, and I changed it to match the code - citing a
+    docstring calling a whole-envelope floor "the honest representation of we measured
+    the envelope but were not told how it is divided". The validator disagreed and the
+    validator was right: that floor has the same footprint and the same height range as
+    its building, so `GEOM_DUPLICATE` fires on every pair. A live project of 910 buildings
+    got 910 duplicate errors the moment elevation was registered, and every unit in it
+    became unapprovable.
+    """
+    from cadastre.api import _derive_after_elevation
+
+    result = _derive_after_elevation(project)
+    assert result["heights_derived"] == 1
+    assert project.execute(
+        "SELECT count(*) FROM unit WHERE unit_type='floor'").fetchone()[0] == 0
+
+    b = store.get_unit(project, "BLD-1")
+    assert b.lower_limit is not None, "the height is the whole point of the run"
+
+
+def test_a_single_storey_buildings_own_floor_is_not_a_duplicate(project):
+    """It coincides with its building because the building *is* one storey.
+
+    I first justified `floors=False` above by saying this pair is a duplicate. It is not:
+    the rule was flagging every single-storey building in a project, which over rural
+    India is most of them. The real reason auto-derive creates no floors is that
+    registering elevation measures the envelope and says nothing about the interior -
+    for a one-storey building the subdivision happens to be right, for a seven-storey one
+    it is wrong, and the automatic path cannot tell which it has.
+    """
+    derive.derive_heights(project, default_floor_count=1)
+    units, rels, sources, settings = store.load_project(project)
+    result = validate.run(units, rels, sources, settings)
+    assert not [f for f in result.findings if f.rule_id.value == "GEOM_DUPLICATE"]
+
+
+def test_two_unrelated_units_with_the_same_extent_are_still_a_duplicate(project):
+    """The exemption is only the containment pair; a record entered twice still collides."""
+    derive.derive_heights(project, default_floor_count=1)
+    original = store.get_unit(project, "BLD-1")
+    twin = store.get_unit(project, "BLD-1")
+    twin.unit_id = "BLD-1-COPY"
+    twin.ulpin_provisional = None
+    store.save_unit(project, twin)
+    project.commit()
+
+    units, rels, sources, settings = store.load_project(project)
+    result = validate.run(units, rels, sources, settings)
+    assert [f for f in result.findings if f.rule_id.value == "GEOM_DUPLICATE"], \
+        "two buildings with one footprint and one height range is a real duplicate"
+
+
+def test_a_dem_with_no_dsm_extrudes_nothing(project):
+    """One surface is not a height range, and half a pair must not half-derive."""
+    from cadastre.api import _derive_after_elevation
+
+    project.execute("DELETE FROM raster WHERE kind = 'DSM'")
+    project.commit()
+    assert _derive_after_elevation(project) == {}
+    assert store.get_unit(project, "BLD-1").lower_limit is None
+
+
+def test_re_registering_elevation_is_not_a_second_derive(project):
+    """Every building already has a height, so there is nothing pending to extrude."""
+    from cadastre.api import _derive_after_elevation
+
+    _derive_after_elevation(project)
+    assert _derive_after_elevation(project) == {}
+
+
+# --- floor segmentation after elevation has already extruded ---------------------------
+
+def test_floor_segmentation_still_runs_on_an_already_extruded_building(project):
+    """The regression that made Floor Segmentation a permanent no-op.
+
+    Registering elevation extrudes on its own now, so every building has a height by the
+    time anyone presses Floor Segmentation - and `derive` selected only buildings with a
+    NULL height. The button reported `buildings seen: 0` and a project could never get
+    past one whole-envelope floor per building.
+    """
+    first = derive.derive_heights(project, default_floor_count=1)
+    assert first.heights_derived == 1
+    assert first.floors_created == 1, "the envelope itself, undivided"
+
+    second = derive.derive_heights(project, estimate_floors=True)
+    assert second.buildings_seen == 1, "the extruded building is still this run's work"
+    assert second.heights_derived == 0, "it already had a height; nothing new was measured"
+    assert second.floors_created > 1
+
+    b = store.get_unit(project, "BLD-1")
+    assert b.attributes["floor_count_method"] == "ndsm_division"
+    assert b.confidence_score == pytest.approx(0.4)
+
+
+def test_a_shorter_re_estimate_drops_the_levels_that_no_longer_exist(project):
+    """Eight storeys re-estimated as seven must not leave the eighth behind.
+
+    Floor ids are derived from the building and the index, so a re-split silently keeps
+    every level the new count does not reach: still a unit, still related to the building,
+    still carrying its identifier - a storey that exists in the register and nowhere else.
+    """
+    derive.derive_heights(project, default_floor_count=8)
+    assert project.execute(
+        "SELECT count(*) FROM unit WHERE unit_type='floor'").fetchone()[0] == 8
+
+    # Clear the count so the estimator revisits it. A 21 m envelope over an assumed 3 m
+    # storey estimates seven, which is one fewer than the stack already there.
+    b = store.get_unit(project, "BLD-1")
+    b.attributes = {k: v for k, v in b.attributes.items() if k != "floor_count"}
+    store.save_unit(project, b)
+    project.commit()
+
+    report = derive.derive_heights(project, estimate_floors=True)
+    assert report.floors_removed == 1
+    assert project.execute(
+        "SELECT count(*) FROM unit WHERE unit_type='floor'").fetchone()[0] == 7
+    # Nothing is left pointing at a level that no longer exists.
+    assert project.execute(
+        "SELECT count(*) FROM unit_relationship r LEFT JOIN unit u "
+        "ON u.unit_id = r.to_unit_id WHERE u.unit_id IS NULL").fetchone()[0] == 0
+
+
+def test_an_approved_floor_is_never_dropped_by_a_re_estimate(project):
+    """Its identifier is frozen and somebody is relying on it.
+
+    Retiring a property record because a later estimate came out shorter is the opposite
+    of what a register is for.
+    """
+    derive.derive_heights(project, default_floor_count=8)
+    top = max(
+        (store.get_unit(project, r["unit_id"]) for r in project.execute(
+            "SELECT unit_id FROM unit WHERE unit_type='floor'")),
+        key=lambda f: f.attributes["floor_index"])
+    assert top.attributes["floor_index"] == 7, "the level a seven-storey re-split loses"
+    # The schema refuses an approved unit with no ULPIN, which is the whole point of
+    # approval: it is the transition that freezes one.
+    top.ulpin = top.ulpin_provisional
+    top.status = Status.APPROVED
+    store.save_unit(project, top)
+
+    b = store.get_unit(project, "BLD-1")
+    b.attributes = {k: v for k, v in b.attributes.items() if k != "floor_count"}
+    store.save_unit(project, b)
+    project.commit()
+
+    report = derive.derive_heights(project, estimate_floors=True)
+    assert report.floors_removed == 0
+    assert store.get_unit(project, top.unit_id) is not None
+
+
+def test_a_declared_storey_count_is_not_replaced_by_a_guess(project):
+    """A source that stated four floors knows more than an assumed storey height does."""
+    b = store.get_unit(project, "BLD-1")
+    b.attributes = b.attributes | {"floor_count": 4}
+    store.save_unit(project, b)
+    project.commit()
+
+    derive.derive_heights(project, estimate_floors=True)
+    after = store.get_unit(project, "BLD-1")
+    assert after.attributes["floor_count"] == 4
+    assert "floor_count_method" not in after.attributes
+
+
+def test_a_building_that_declares_its_storeys_still_gets_a_floor_stack(project):
+    """The condition for "needs a stack" is having no floors, not having no floor count.
+
+    Those coincide only when nothing declares one. A source that states `floors_count`
+    gives its buildings a count at ingest, so keying the selection off the count skipped
+    every declared building - 28 of 51 on the first dataset that declared any - while the
+    run reported success on the other 23. Silent, and only visible as buildings with no
+    floors under them.
+    """
+    b = store.get_unit(project, "BLD-1")
+    b.attributes = b.attributes | {"floor_count": 4}
+    store.save_unit(project, b)
+    project.commit()
+
+    report = derive.derive_heights(project, estimate_floors=True)
+    assert report.buildings_seen == 1, "declared or not, it has no floors yet"
+    assert report.floors_created == 4, "the count it declared, not a guess"
+
+    after = store.get_unit(project, "BLD-1")
+    assert "floor_count_method" not in after.attributes
+
+
+def test_running_floor_segmentation_twice_does_not_churn_an_estimated_stack(project):
+    """Pressing the button again is cheap: an estimated stack is already this run's work."""
+    first = derive.derive_heights(project, estimate_floors=True)
+    assert first.floors_created > 1
+
+    second = derive.derive_heights(project, estimate_floors=True)
+    assert second.buildings_seen == 0
+    assert second.floors_created == 0
+
+
+def test_height_estimation_gives_a_stack_to_a_building_that_already_has_a_count(project):
+    """Without asking for an estimate: the building has a count and no floors.
+
+    This is the path where "has no stack" is the only thing that can select it. The test
+    above passes even with the old count-based predicate, because asking for an estimate
+    adds a second clause that happens to catch the same building - so it never isolated
+    the bug it was written for.
+    """
+    from cadastre.api import _derive_after_elevation
+
+    b = store.get_unit(project, "BLD-1")
+    b.attributes = b.attributes | {"floor_count": 4}
+    store.save_unit(project, b)
+    project.commit()
+
+    _derive_after_elevation(project)          # heights, no floors
+    assert project.execute(
+        "SELECT count(*) FROM unit WHERE unit_type='floor'").fetchone()[0] == 0
+
+    report = derive.derive_heights(project, estimate_floors=False)
+    assert report.buildings_seen == 1, "extruded, counted, and still has no floors"
+    assert report.floors_created == 4
+
+
+def test_a_parcel_the_dem_does_not_cover_is_reported_not_skipped(project):
+    """An ungrounded parcel keeps an absolute stratum, and that is not a quiet outcome.
+
+    -30/+150 read absolutely over ground at 912 m puts the whole parcel column below its
+    own buildings, so every structure on it raises ESCAPES_PARENT. Skipping the parcel
+    without recording it turned a missing-raster problem into a wall of geometry errors
+    three steps away, with `parcels_grounded` reporting only the ones that worked.
+    """
+    import shapely.geometry
+    from cadastre.models import CreatedBy, Representation, Status, Unit, UnitType
+
+    far = shapely.geometry.box(E + 9000, N + 9000, E + 9050, N + 9050)
+    store.save_unit(project, Unit(
+        unit_id="PCL-FAR", unit_type=UnitType.LAND_PARCEL, status=Status.NEEDS_REVIEW,
+        crs="EPSG:32643", vertical_datum="EGM2008",
+        footprint_2d=shapely.geometry.mapping(far), source_ids=["src"],
+        created_by=CreatedBy.DERIVED, representation=Representation.PRISM,
+        attributes={"parent_ulpin_14": PARENT}))
+    project.commit()
+
+    report = derive.derive_heights(project)
+    assert report.parcels_ungrounded == ["PCL-FAR"]
+    assert "PCL-FAR" in report.as_dict()["parcels_ungrounded"]

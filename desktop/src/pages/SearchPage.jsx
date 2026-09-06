@@ -1,3 +1,4 @@
+import { useNavigate } from 'react-router-dom';
 import { useState } from 'react';
 import { Icons } from '../components/Icons';
 import { UNIT_TYPE_LABELS, searchRows } from '../data/cadastreApi';
@@ -8,6 +9,7 @@ const LIVE_TYPES = ['All Types', ...Object.values(UNIT_TYPE_LABELS)];
 const LIVE_STATUSES = ['All Status', 'draft', 'processing', 'needs_review', 'approved', 'replaced', 'closed'];
 
 export default function SearchPage() {
+  const navigate = useNavigate();
   const { doc, live, status: loadStatus, error: loadError, reload } = useCadastreDocument();
   const [query, setQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState('All Types');
@@ -103,14 +105,17 @@ export default function SearchPage() {
           <div className="search-results">
             {filtered.map((result, i) => (
               <div className="search-result-card" key={i}>
+                {/* The sidecar's status values are lowercase, straight off the unit.
+                    Comparing against 'Approved' meant an approved unit never once
+                    rendered as approved — the one distinction this list exists to make. */}
                 <div style={{
                   width: 44, height: 44, borderRadius: 'var(--radius-md)',
-                  background: result.status === 'Approved' ? 'var(--status-success-bg)' : 'var(--bg-surface)',
+                  background: result.status === 'approved' ? 'var(--status-success-bg)' : 'var(--bg-surface)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0
                 }}>
                   <Icons.Create3D style={{
                     width: 22, height: 22,
-                    color: result.status === 'Approved' ? 'var(--status-success)' : 'var(--text-tertiary)'
+                    color: result.status === 'approved' ? 'var(--status-success)' : 'var(--text-tertiary)'
                   }} />
                 </div>
                 <div style={{ flex: 1 }}>
@@ -133,7 +138,7 @@ export default function SearchPage() {
                   </div>
                 </div>
                 <span className={`status-badge ${result.status.toLowerCase()}`}>{result.status}</span>
-                <button className="btn btn-secondary btn-sm">
+                <button className="btn btn-secondary btn-sm" onClick={() => navigate('/map-2d')}>
                   <Icons.Map2D style={{ width: 14, height: 14 }} /> View on Map
                 </button>
               </div>
