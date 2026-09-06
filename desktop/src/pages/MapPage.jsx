@@ -5,6 +5,7 @@ import L from 'leaflet';
 import { Icons } from '../components/Icons';
 import { MAP_LAYERS } from '../data/layers';
 import { useCadastreDocument } from '../data/useCadastre';
+import { UNIT_TYPE_LABELS } from '../data/cadastreApi';
 // P5 owns the projected-CRS-to-WGS84 conversion. Importing it rather than copying it
 // keeps one implementation: the desktop app and the published web build have to agree
 // on where a building is, exactly, and two copies of that maths would drift.
@@ -15,7 +16,10 @@ function useProjectGeometry() {
   const { doc } = useCadastreDocument();
   return useMemo(() => {
     if (!doc) return { parcels: [], buildings: [], bounds: null, sceneUnits: [],
-                       projectExtent: null, withHeights: 0 };
+                       projectExtent: null, withHeights: 0,
+                       unitsById: new Map(), sourcesById: new Map(),
+                       findingsByUnit: new Map(), parentOf: new Map(),
+                       childrenOf: new Map() };
 
     const units = fromP4Document(doc);
     // Leaflet wants [lat, lng]; the adapter returns GeoJSON order.
@@ -42,6 +46,21 @@ function useProjectGeometry() {
     for (const r of doc.relationships ?? []) {
       if (r.rel_type === 'contains') parentOf.set(r.to_unit_id, r.from_unit_id);
     }
+    const unitsById = new Map(raw.map((u) => [u.unit_id, u]));
+    const sourcesById = new Map((doc.sources ?? []).map((s) => [s.source_id, s]));
+    const childrenOf = new Map();
+    for (const [child, parent] of parentOf) {
+      if (!childrenOf.has(parent)) childrenOf.set(parent, []);
+      childrenOf.get(parent).push(child);
+    }
+    // Findings are keyed by unit so a panel can show a unit's own, rather than sending
+    // the reader to a project-wide error list to find out whether this one is clean.
+    const findingsByUnit = new Map();
+    for (const f of doc.findings ?? []) {
+      if (!findingsByUnit.has(f.unit_id)) findingsByUnit.set(f.unit_id, []);
+      findingsByUnit.get(f.unit_id).push(f);
+    }
+
     const sceneUnits = raw.map((u) => ({
       unit_id: u.unit_id,
       unit_type: u.unit_type,
@@ -73,6 +92,11 @@ function useProjectGeometry() {
       bounds,
       sceneUnits,
       projectExtent,
+      unitsById,
+      sourcesById,
+      findingsByUnit,
+      parentOf,
+      childrenOf,
       withHeights: sceneUnits.filter(
         (u) => u.unit_type !== 'land_parcel' && u.lower_limit != null).length,
     };
@@ -179,111 +203,253 @@ function LayerPanel({ layers, onToggle, onClose }) {
 }
 
 /* Property Panel component */
-function PropertyPanel({ property, onClose }) {
+/** Shoelace area of a ring already in the project CRS, which is metres. */
+function ringArea(ring) {
+  let a = 0;
+  for (let i = 0, n = ring.length - 1; i < n; i++) {
+    a += ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1];
+  }
+  return Math.abs(a) / 2;
+}
+
+const m = (v, digits = 2) =>
+  v === null || v === undefined || Number.isNaN(v) ? '—' : `${Number(v).toFixed(digits)} m`;
+
+/** Everything the project knows about one unit, assembled for the panel.
+ *
+ * The panel was written against a mock record and never given a real one: clicking a
+ * building set `selectedProperty` to null, so a screen that exists to answer "what is
+ * this" answered nothing. Every field below is read off the unit or its registry entry;
+ * nothing here is computed to fill a gap, and a value the project does not hold shows as
+ * an em dash rather than a plausible number.
+ */
+function describeUnit(unitId, ctx) {
+  const u = ctx.unitsById.get(unitId);
+  if (!u) return null;
+  const at = u.attributes ?? {};
+  const ring = u.footprint_2d?.coordinates?.[0] ?? [];
+  const area = ring.length ? ringArea(ring) : null;
+  const height = u.lower_limit != null && u.upper_limit != null
+    ? u.upper_limit - u.lower_limit : null;
+
+  const parentId = ctx.parentOf.get(unitId);
+  const parent = parentId ? ctx.unitsById.get(parentId) : null;
+  const children = (ctx.childrenOf.get(unitId) ?? [])
+    .map((id) => ctx.unitsById.get(id)).filter(Boolean);
+
+  return {
+    unit: u,
+    unitId,
+    label: u.ulpin ?? u.ulpin_provisional ?? unitId,
+    provisional: !u.ulpin && Boolean(u.ulpin_provisional),
+    unitType: u.unit_type,
+    status: u.status,
+    validationState: u.validation_state,
+    createdBy: u.created_by,
+    confidence: u.confidence_score,
+    recordedFrom: u.recorded_from,
+    lower: u.lower_limit,
+    upper: u.upper_limit,
+    height,
+    area,
+    volume: area != null && height != null ? area * height : null,
+    groundLevel: at.ground_level_m,
+    roofLevel: at.roof_level_m,
+    plinthOffset: at.plinth_offset_m,
+    rasterCoverage: at.raster_coverage,
+    parcelShare: at.parcel_share,
+    parentUlpin14: at.parent_ulpin_14,
+    floorIndex: at.floor_index,
+    floorHeight: at.floor_height_m,
+    floorCount: at.floor_count,
+    floorMethod: at.floor_count_method,
+    assumedStorey: at.assumed_storey_m,
+    localId: at.local_id,
+    heightsUnavailable: at.heights_unavailable,
+    parent: parent && {
+      unitId: parent.unit_id, type: parent.unit_type,
+      label: parent.ulpin ?? parent.ulpin_provisional ?? parent.unit_id,
+    },
+    children: children.map((c) => ({
+      unitId: c.unit_id, type: c.unit_type,
+      label: c.ulpin ?? c.ulpin_provisional ?? c.unit_id,
+      index: c.attributes?.floor_index,
+      lower: c.lower_limit, upper: c.upper_limit,
+    })).sort((x, y) => (y.lower ?? 0) - (x.lower ?? 0)),
+    sources: (u.source_ids ?? []).map(
+      (id) => ctx.sourcesById.get(id) ?? { source_id: id }),
+    findings: ctx.findingsByUnit.get(unitId) ?? [],
+  };
+}
+
+function Field({ label, value, hint, tone }) {
+  return (
+    <div className="property-field">
+      <span className="property-field-label" title={hint}>{label}</span>
+      <span className="property-field-value" style={tone ? { color: tone } : undefined}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function PropertyPanel({ property, onClose, onSelectUnit }) {
   if (!property) return null;
+  const p = property;
+  const isFloor = p.unitType === 'floor' || p.unitType === 'apartment';
+  const errors = p.findings.filter((f) => f.severity === 'error');
+  const warnings = p.findings.filter((f) => f.severity === 'warning');
+
   return (
     <div className="property-panel">
       <div className="property-panel-header">
-        <span className="property-panel-title">PROPERTY DETAILS</span>
+        <span className="property-panel-title">
+          {(UNIT_TYPE_LABELS[p.unitType] ?? p.unitType).toUpperCase()}
+        </span>
         <button className="context-panel-close" onClick={onClose}>
           <Icons.Close style={{ width: 14, height: 14 }} />
         </button>
       </div>
       <div className="property-panel-body">
         <div className="property-ulpin">
-          <span className="property-ulpin-code">{property.ulpin}</span>
-          <span className={`status-badge ${property.status.toLowerCase()}`}>{property.status}</span>
+          <span className="property-ulpin-code">{p.label}</span>
+          <span className={`status-badge ${p.status}`}>{p.status.replace(/_/g, ' ')}</span>
         </div>
-
-        <div className="property-field">
-          <span className="property-field-label">Property Type</span>
-          <span className="property-field-value">{property.propertyType}</span>
-        </div>
-        <div className="property-field">
-          <span className="property-field-label">Floor / Level</span>
-          <span className="property-field-value">{property.floor}</span>
-        </div>
-        <div className="property-field">
-          <span className="property-field-label">Status</span>
-          <span className="property-field-value" style={{ color: 'var(--status-success)' }}>{property.status}</span>
-        </div>
-        <div className="property-field">
-          <span className="property-field-label">Bottom Height</span>
-          <span className="property-field-value">{property.bottomHeight}</span>
-        </div>
-        <div className="property-field">
-          <span className="property-field-label">Top Height</span>
-          <span className="property-field-value">{property.topHeight}</span>
-        </div>
-        <div className="property-field">
-          <span className="property-field-label">Parent Building</span>
-          <span className="property-field-value" style={{ color: 'var(--accent-secondary)' }}>{property.parentBuilding}</span>
-        </div>
-        <div className="property-field">
-          <span className="property-field-label">Parent Parcel</span>
-          <span className="property-field-value" style={{ color: 'var(--accent-secondary)' }}>{property.parentParcel}</span>
-        </div>
-        <div className="property-field">
-          <span className="property-field-label">3D Shape Volume</span>
-          <span className="property-field-value">{property.volume}</span>
-        </div>
+        {p.provisional && (
+          <div className="property-note">
+            Provisional. The identifier is frozen to this unit only at approval, so it can
+            still change until then.
+          </div>
+        )}
 
         <div className="property-section">
-          <div className="property-section-title">Source Data</div>
-          <div>
-            {property.sourceData.map((s) => (
-              <span className="property-tag" key={s}>{s}</span>
+          <div className="property-section-title">Extent</div>
+          <Field label={isFloor ? 'Floor' : 'Storeys'}
+                 value={isFloor
+                   ? (p.floorIndex === undefined ? '—' : `index ${p.floorIndex}`)
+                   : (p.floorCount ?? '—')} />
+          <Field label="Base" value={m(p.lower, 2)}
+                 hint="Absolute level in the project's vertical datum" />
+          <Field label="Top" value={m(p.upper, 2)} />
+          <Field label="Height" value={m(p.height, 2)} />
+          <Field label="Footprint" value={p.area == null ? '—' : `${p.area.toFixed(1)} m²`} />
+          <Field label="Volume"
+                 value={p.volume == null ? '—' : `${p.volume.toFixed(0)} m³`}
+                 hint="Footprint area times height: this unit is a prism, so this is exact" />
+        </div>
+
+        {p.heightsUnavailable && (
+          <div className="property-note property-note-warn">{p.heightsUnavailable}</div>
+        )}
+
+        {!isFloor && (p.groundLevel != null || p.roofLevel != null) && (
+          <div className="property-section">
+            <div className="property-section-title">How this height was measured</div>
+            <Field label="Ground (DEM)" value={m(p.groundLevel, 2)} />
+            <Field label="Roof (DSM)" value={m(p.roofLevel, 2)} />
+            <Field label="Plinth offset" value={m(p.plinthOffset, 2)}
+                   hint="Indian construction sits above surrounding ground; a project setting, not a constant" />
+            <Field label="Raster coverage"
+                   value={p.rasterCoverage == null ? '—' : `${(p.rasterCoverage * 100).toFixed(1)}%`}
+                   tone={p.rasterCoverage != null && p.rasterCoverage < 0.6
+                     ? 'var(--status-warning)' : undefined}
+                   hint="Fraction of the footprint with valid elevation. Thin coverage is refused, not averaged." />
+          </div>
+        )}
+
+        {p.floorMethod && (
+          <div className="property-section">
+            <div className="property-section-title">Storey count is an estimate</div>
+            <div className="property-note property-note-warn">
+              Divided by an assumed {m(p.assumedStorey, 1)} storey height
+              ({p.floorMethod}). Nothing measured how this building is actually divided,
+              which is why the confidence below is low.
+            </div>
+          </div>
+        )}
+
+        <div className="property-section">
+          <div className="property-section-title">Record</div>
+          <Field label="Validation"
+                 value={p.validationState.replace(/_/g, ' ')}
+                 tone={p.validationState === 'failed' ? 'var(--status-error)'
+                   : p.validationState === 'passed' ? 'var(--status-success)'
+                   : 'var(--status-warning)'} />
+          <Field label="Errors" value={errors.length}
+                 tone={errors.length ? 'var(--status-error)' : 'var(--status-success)'} />
+          <Field label="Warnings" value={warnings.length}
+                 tone={warnings.length ? 'var(--status-warning)' : 'var(--status-success)'} />
+          <Field label="Created by" value={p.createdBy} />
+          <Field label="Confidence"
+                 value={p.confidence == null ? 'n/a — not AI-derived' : p.confidence.toFixed(2)}
+                 tone={p.confidence != null && p.confidence < 0.6
+                   ? 'var(--status-warning)' : undefined} />
+          {p.localId && <Field label="Source id" value={p.localId} />}
+          <Field label="Recorded"
+                 value={p.recordedFrom ? new Date(p.recordedFrom).toLocaleString() : '—'} />
+        </div>
+
+        {p.findings.length > 0 && (
+          <div className="property-section">
+            <div className="property-section-title">Findings</div>
+            {p.findings.map((f) => (
+              <div key={f.finding_id} className={`property-finding ${f.severity}`}>
+                <div className="property-finding-rule">{f.rule_id}</div>
+                <div className="property-finding-message">{f.message}</div>
+              </div>
             ))}
           </div>
-        </div>
-
-        <div className="property-field">
-          <span className="property-field-label">Accuracy</span>
-          <span className="property-field-value" style={{ color: 'var(--status-success)' }}>{property.accuracy}</span>
-        </div>
-        <div className="property-field">
-          <span className="property-field-label">AI Confidence</span>
-          <span className="property-field-value" style={{ color: 'var(--status-success)' }}>{property.aiConfidence}</span>
-        </div>
-        <div className="property-field">
-          <span className="property-field-label">Last Updated</span>
-          <span className="property-field-value">{property.lastUpdated}</span>
-        </div>
-        <div className="property-field">
-          <span className="property-field-label">Created By</span>
-          <span className="property-field-value">{property.createdBy}</span>
-        </div>
+        )}
 
         <div className="property-section">
-          <div className="property-section-title">Actions</div>
-          <div className="property-actions">
-            <button className="btn btn-secondary btn-sm" onClick={() => navigate('/map-3d')}>
-              <Icons.Map3D style={{ width: 14, height: 14 }} /> View in 3D
-            </button>
-            <button className="btn btn-secondary btn-sm" disabled
-                    title="Editing a unit is not built yet">
-              <Icons.Pencil style={{ width: 14, height: 14 }} /> Edit
-            </button>
-            <button className="btn btn-secondary btn-sm" onClick={() => navigate('/history')}>
-              <Icons.History style={{ width: 14, height: 14 }} /> Open History
-            </button>
-          </div>
-        </div>
-
-        <div className="property-section">
-          <div className="property-section-title">Related Properties</div>
-          {property.relatedProperties.map((rp) => (
-            <div className="related-property" key={rp.id}>
-              <div>
-                <div className="related-property-id">{rp.id}</div>
-                <div className="related-property-info">{rp.floor}</div>
+          <div className="property-section-title">Where this came from</div>
+          {p.sources.length === 0 && <div className="property-note">No source recorded.</div>}
+          {p.sources.map((s) => (
+            <div className="property-source" key={s.source_id}>
+              <div className="property-source-name">{s.name ?? s.source_id}</div>
+              <div className="property-source-meta">
+                {[s.source_type, s.provider, s.capture_date].filter(Boolean).join(' · ') || s.source_id}
               </div>
-              <span className={`status-badge ${rp.status.toLowerCase()}`}>{rp.status}</span>
+              <div className="property-source-meta">
+                {s.horizontal_accuracy_m == null
+                  ? 'accuracy not recorded — tolerances fall back to a default'
+                  : `± ${s.horizontal_accuracy_m} m horizontal, ± ${s.vertical_accuracy_m} m vertical`}
+              </div>
             </div>
           ))}
-          <div style={{ textAlign: 'center', marginTop: 8 }}>
-            <a style={{ fontSize: 'var(--text-xs)', color: 'var(--accent-secondary)', cursor: 'pointer' }}>View All</a>
-          </div>
+        </div>
+
+        <div className="property-section">
+          <div className="property-section-title">Lineage</div>
+          {p.parent ? (
+            <button className="property-link" onClick={() => onSelectUnit(p.parent.unitId)}>
+              <span className="property-field-label">
+                {UNIT_TYPE_LABELS[p.parent.type] ?? p.parent.type}
+              </span>
+              <span className="property-field-value">{p.parent.label}</span>
+            </button>
+          ) : (
+            <Field label="Parent" value={p.parentUlpin14 ?? '—'}
+                   hint="The 14-character parcel identifier this unit was minted under" />
+          )}
+          {p.children.length > 0 && (
+            <>
+              <div className="property-field">
+                <span className="property-field-label">Contains</span>
+                <span className="property-field-value">{p.children.length}</span>
+              </div>
+              {p.children.slice(0, 12).map((c) => (
+                <button className="property-link" key={c.unitId}
+                        onClick={() => onSelectUnit(c.unitId)}>
+                  <span className="property-field-label">
+                    {c.index === undefined ? UNIT_TYPE_LABELS[c.type] ?? c.type
+                      : c.index === 0 ? 'Ground' : `Level ${c.index}`}
+                  </span>
+                  <span className="property-field-value">{m(c.lower, 1)} – {m(c.upper, 1)}</span>
+                </button>
+              ))}
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -434,7 +600,9 @@ function ThreeScene({ selectedBuilding, onSelectBuilding, activeFloor }) {
         mesh.userData = { unitId: u.unit_id, label: u.label, type: u.unit_type,
                           buildingId: u.unit_type === 'building' ? u.unit_id : u.parent_unit_id };
         scene.add(mesh);
-        if (u.unit_type === 'building') pickable.push(mesh);
+        // Floors of the open building are pickable too: the stack is drawn, so a
+        // click on one has to reach it rather than fall through to the envelope.
+        pickable.push(mesh);
 
         const edges = new THREE.LineSegments(
           new THREE.EdgesGeometry(geom),
@@ -589,19 +757,26 @@ export default function MapPage({ project, view = '2d' }) {
     }));
   };
 
-  const selectBuilding = (unitId) => {
-    setSelectedBuildingId(unitId);
-    setActiveFloor(null);   // the previous building's floor is not this building's floor
-  };
-
-  const handleBuildingClick = (building) => {
-    setSelectedBuildingId(building.id);
-    // Details come from the unit that was actually picked, or the panel stays shut.
-    setSelectedProperty(null);
-  };
-
+  const geometry = useProjectGeometry();
   const { parcels: livePercels, buildings: liveBuildings, bounds,
-          sceneUnits, projectExtent, withHeights } = useProjectGeometry();
+          sceneUnits, projectExtent, withHeights } = geometry;
+
+  // Selecting anything opens its record. A 3D view whose click does nothing is a
+  // picture of a cadastre rather than a cadastre: the geometry is the index, and the
+  // record behind it is the thing a land system exists to show.
+  const selectUnit = useCallback((unitId) => {
+    const u = geometry.unitsById.get(unitId);
+    if (!u) return;
+    if (u.unit_type === 'floor' || u.unit_type === 'apartment') {
+      const parent = geometry.parentOf.get(unitId);
+      if (parent) setSelectedBuildingId(parent);   // keep its stack open behind it
+      setActiveFloor(unitId);
+    } else {
+      setSelectedBuildingId(unitId);
+      setActiveFloor(null);   // the previous building's floor is not this building's
+    }
+    setSelectedProperty(describeUnit(unitId, geometry));
+  }, [geometry]);
   const selectedBuildingData = liveBuildings.find(b => b.unit.unit_id === selectedBuildingId)?.unit;
   // What the HUD reports has to come from the scene, not from a remembered string.
   const sceneBuildingCount = sceneUnits.filter((u) => u.unit_type === 'building').length;
@@ -689,7 +864,7 @@ export default function MapPage({ project, view = '2d' }) {
                       fillOpacity: 0.15
                     }}
                     eventHandlers={{
-                      click: () => handleBuildingClick(building)
+                      click: () => selectUnit(building.unit_id)
                     }}
                   >
                     <Popup>
@@ -720,13 +895,13 @@ export default function MapPage({ project, view = '2d' }) {
             <>
               <ThreeScene
                 selectedBuilding={selectedBuildingId}
-                onSelectBuilding={selectBuilding}
+                onSelectBuilding={selectUnit}
                 activeFloor={activeFloor}
               />
               <FloorSlider
                 floors={selectedFloors}
                 activeFloor={activeFloor}
-                onFloorChange={setActiveFloor}
+                onFloorChange={(id) => (id ? selectUnit(id) : setActiveFloor(null))}
               />
               <div className="map-info-overlay">
                 <span>{selectedBuildingId
@@ -741,7 +916,8 @@ export default function MapPage({ project, view = '2d' }) {
       </div>
 
       {selectedProperty && (
-        <PropertyPanel property={selectedProperty} onClose={() => setSelectedProperty(null)} />
+        <PropertyPanel property={selectedProperty} onSelectUnit={selectUnit}
+                       onClose={() => setSelectedProperty(null)} />
       )}
     </>
   );
