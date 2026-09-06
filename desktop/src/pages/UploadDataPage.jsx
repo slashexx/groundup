@@ -3,23 +3,14 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { Icons } from '../components/Icons';
 import { cadastre, SidecarUnavailable } from '../data/cadastreApi';
 import { useCadastreDocument, NothingYet } from '../data/useCadastre';
-
-// The same nine kinds the creation wizard offers, because a project does not care
-// whether a file arrived at the start or an hour later. The type is chosen here rather
-// than guessed from the extension: .geojson is a parcel layer or a footprint layer
-// depending only on what is in it, and guessing wrong puts 910 buildings into the
+// The same table the creation wizard reads, because a project does not care whether a
+// file arrived at the start or an hour later — and the two used to hold different
+// accuracies for the same kind of file, so the same footprint layer got a different
+// tolerance depending on which screen the operator happened to open. The type is chosen
+// here rather than guessed from the extension: .geojson is a parcel layer or a footprint
+// layer depending only on what is in it, and guessing wrong puts 910 buildings into the
 // register as parcels.
-const SOURCE_KINDS = [
-  { id: 'parcel_map', label: 'GIS parcel layer', hint: 'Cadastral polygons. Carries the 14-character ULPIN every unit inherits.', h: 0.3, v: 0.5 },
-  { id: 'footprint', label: 'Building footprints', hint: 'Building outlines, attached to the parcel holding most of each one.', h: 2.0, v: 5.0 },
-  { id: 'utility', label: 'Utility lines', hint: 'Becomes an easement corridor, which may cross parcel boundaries.', h: 1.0, v: 1.0 },
-  { id: 'dem', label: 'DEM — bare earth', hint: 'Ground level. Without it heights stay absent.', h: 0.2, v: 0.1 },
-  { id: 'dsm', label: 'DSM — surface', hint: 'Roof level. Paired with the DEM to extrude buildings.', h: 0.2, v: 0.1 },
-  { id: 'ortho', label: 'Drone imagery', hint: 'Basemap and visual evidence for review.', h: 0.2, v: 1.0 },
-  { id: 'pointcloud', label: 'LiDAR point cloud', hint: 'Registered as provenance; the DEM and DSM derived from it are what get read.', h: 0.1, v: 0.1 },
-  { id: 'floorplan', label: 'Building floor plan', hint: 'Interior subdivision. Uses a local datum: ground floor is 0.000.', h: 0.05, v: 0.05 },
-  { id: 'control', label: 'GNSS / CORS control', hint: 'The points everything else is tied to.', h: 0.02, v: 0.03 },
-];
+import { SOURCE_KIND_LIST } from '../data/sourceKinds';
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -56,8 +47,8 @@ export default function UploadDataPage() {
         capture_date: today(),
         crs: kind.id === 'dem' || kind.id === 'dsm' ? projectCrs : 'EPSG:4326',
         vertical_datum: projectDatum,
-        horizontal_accuracy_m: kind.h,
-        vertical_accuracy_m: kind.v,
+        horizontal_accuracy_m: kind.accuracy[0],
+        vertical_accuracy_m: kind.accuracy[1],
       })),
     ]);
   }
@@ -108,7 +99,7 @@ export default function UploadDataPage() {
       )}
 
       <div className="ai-tool-grid" style={{ marginBottom: 24 }}>
-        {SOURCE_KINDS.map(kind => (
+        {SOURCE_KIND_LIST.map(kind => (
           <button key={kind.id} className="ai-tool-card" onClick={() => pick(kind)}
                   disabled={!live} style={{ textAlign: 'left', cursor: live ? 'pointer' : 'not-allowed' }}>
             <div className="ai-tool-name">{kind.label}</div>
@@ -185,7 +176,7 @@ export default function UploadDataPage() {
                         <select className="form-input" value={s.source_type}
                                 onWheel={(e) => e.currentTarget.blur()}
                                 onChange={(e) => edit(i, 'source_type', e.target.value)}>
-                          {SOURCE_KINDS.map(k => (
+                          {SOURCE_KIND_LIST.map(k => (
                             <option key={k.id} value={k.id}>{k.label}</option>
                           ))}
                         </select>

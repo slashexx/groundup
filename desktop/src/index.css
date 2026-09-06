@@ -1234,6 +1234,23 @@ a {
   animation: pulse 2s ease-in-out infinite;
 }
 
+/* Green and pulsing is a claim, so only a live sidecar gets it. The others are still
+   and coloured for what they are, because a dot that looks alive while nothing is
+   answering is how the shell came to contradict the banner on the page below it. */
+.statusbar-dot.loading {
+  background: var(--status-warning);
+}
+
+.statusbar-dot.offline {
+  background: var(--text-muted);
+  animation: none;
+}
+
+.statusbar-dot.error {
+  background: var(--status-error);
+  animation: none;
+}
+
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }

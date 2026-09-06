@@ -11,11 +11,12 @@ const menuItems = [
   { path: '/upload', label: 'Upload Data', icon: 'Upload' },
   { path: '/create-3d', label: 'Create 3D Unit', icon: 'Create3D' },
   { path: '/ai-tools', label: 'AI Tools', icon: 'AI' },
-  { path: '/errors', label: 'Check Errors', icon: 'CheckErrors', badge: 7, badgeType: 'error' },
-  { path: '/review', label: 'Review Records', icon: 'Review', badge: 12, badgeType: 'warning' },
-  // The two badges above are placeholders for the offline case. Live, they are replaced
-  // by counts from the project document — a nav badge reading "7 errors" beside a screen
-  // showing none is the same lie as a dashboard of invented numbers.
+  // No badge until the document supplies one. The two entries below carried hardcoded
+  // 7 and 12, which rendered whenever the sidecar was offline — a nav badge reading
+  // "7 errors" beside a banner saying there is no data is the same lie as a dashboard of
+  // invented numbers, and it contradicted the banner on the very same screen.
+  { path: '/errors', label: 'Check Errors', icon: 'CheckErrors', badgeType: 'error' },
+  { path: '/review', label: 'Review Records', icon: 'Review', badgeType: 'warning' },
   { path: '/search', label: 'Search ULPIN', icon: 'Search' },
   { path: '/export', label: 'Export Data', icon: 'Export' },
   { path: '/history', label: 'History', icon: 'History' },
@@ -63,12 +64,26 @@ const toolbarGroups = [
 
 const menuBarItems = ['Home', 'View', 'Tools', 'Analysis', 'AI Tools', 'Validation', 'Help'];
 
+/** What the status-bar light says, per real sidecar state.
+ *
+ * It was a green pulsing dot reading "Connected", hardcoded, so it stayed green while
+ * every screen behind it showed the banner saying the sidecar was not running. This
+ * reads the same `status` the pages do, from the one shared document, so the shell and
+ * the page it frames cannot disagree about whether the data is real.
+ */
+const SIDECAR_STATE = {
+  loading: { label: 'Connecting…', hint: 'Asking the cadastre sidecar for the project' },
+  live: { label: 'Sidecar live', hint: 'The project document is being read from the sidecar' },
+  offline: { label: 'Sidecar offline', hint: 'The cadastre sidecar is not running — screens have no data to show' },
+  error: { label: 'Sidecar error', hint: 'The sidecar answered with an error; see the banner on the page' },
+};
+
 export default function AppShell({ children, project, user, onChangeProject }) {
   const location = useLocation();
   const navigate = useNavigate();
   const [activeTool, setActiveTool] = useState('select');
   const [searchQuery, setSearchQuery] = useState('');
-  const { doc, live } = useCadastreDocument();
+  const { doc, live, status } = useCadastreDocument();
 
   const counts = live && doc ? dashboardCounts(doc) : null;
   const navItems = counts
@@ -93,10 +108,11 @@ export default function AppShell({ children, project, user, onChangeProject }) {
     }
   };
 
-  const currentTime = new Date().toLocaleString('en-IN', {
+  // The machine's own locale. Forcing en-IN stated a nationality the app does not know:
+  // the format is the reader's, not the data's.
+  const currentTime = new Date().toLocaleString(undefined, {
     day: '2-digit', month: 'short', year: 'numeric',
     hour: '2-digit', minute: '2-digit', second: '2-digit',
-    hour12: true
   });
 
   return (
@@ -262,29 +278,23 @@ export default function AppShell({ children, project, user, onChangeProject }) {
       <div className="statusbar">
         <div className="statusbar-left">
           <div className="statusbar-item">
-            <span>Version 1.0.0</span>
+            <span>Version {__APP_VERSION__}</span>
           </div>
-          <div className="statusbar-item">
-            <span className="statusbar-dot" />
-            <span>Connected</span>
+          <div className="statusbar-item" title={SIDECAR_STATE[status].hint}>
+            <span className={`statusbar-dot ${status}`} />
+            <span>{SIDECAR_STATE[status].label}</span>
           </div>
         </div>
         <div className="statusbar-right">
+          {/* A fixed Lat/Lon/Elev/Scale for Bengaluru used to sit here, over every
+              project regardless of where it was. The frame the project actually works
+              in is knowable; a cursor position the status bar never reads is not, and
+              the 2D map reports that itself as the pointer moves. */}
           <div className="statusbar-item">
-            <span>Lat: 12.9716°</span>
+            <span>CRS: {project.project_crs ?? project.crs ?? '—'}</span>
           </div>
           <div className="statusbar-item">
-            <span>Lon: 77.5946°</span>
-          </div>
-          <div className="statusbar-item">
-            <span>Elev: 920.45 m</span>
-          </div>
-          <div className="statusbar-item">
-            <span>Scale 1:2,500</span>
-          </div>
-          <div className="statusbar-item">
-            <Icons.Network style={{ width: 12, height: 12 }} />
-            <span>Network</span>
+            <span>Datum: {project.vertical_datum ?? project.verticalDatum ?? '—'}</span>
           </div>
           <div className="statusbar-item">
             <span>{currentTime}</span>

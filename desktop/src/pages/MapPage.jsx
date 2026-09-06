@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { MapContainer, TileLayer, Polygon, Popup, Marker, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import { Icons } from '../components/Icons';
-import { MAP_LAYERS } from '../data/layers';
+import { LAYER_GROUP_LABELS, MAP_LAYERS } from '../data/layers';
 import { useCadastreDocument } from '../data/useCadastre';
 import { UNIT_TYPE_LABELS } from '../data/cadastreApi';
 // P5 owns the projected-CRS-to-WGS84 conversion. Importing it rather than copying it
@@ -16,7 +16,7 @@ function useProjectGeometry() {
   const { doc } = useCadastreDocument();
   return useMemo(() => {
     if (!doc) return { parcels: [], buildings: [], bounds: null, sceneUnits: [],
-                       projectExtent: null, withHeights: 0,
+                       projectExtent: null, withHeights: 0, typeCounts: {},
                        unitsById: new Map(), sourcesById: new Map(),
                        findingsByUnit: new Map(), parentOf: new Map(),
                        childrenOf: new Map() };
@@ -86,10 +86,16 @@ function useProjectGeometry() {
       ? { minX, minY, maxX, maxY, groundZ: Number.isFinite(groundZ) ? groundZ : 0 }
       : null;
 
+    // What the project actually holds, per unit type. The layer panel offers a toggle
+    // only where there is something to toggle.
+    const typeCounts = {};
+    for (const u of raw) typeCounts[u.unit_type] = (typeCounts[u.unit_type] ?? 0) + 1;
+
     return {
       parcels: parcels.map((u) => ({ unit: u, positions: latlng(u) })),
       buildings: buildings.map((u) => ({ unit: u, positions: latlng(u) })),
       bounds,
+      typeCounts,
       sceneUnits,
       projectExtent,
       unitsById,
@@ -127,6 +133,56 @@ function FitToProject({ bounds }) {
   return null;
 }
 
+/** What the 2D overlay reports, read off the map itself.
+ *
+ *  The overlay used to state a fixed latitude, longitude, elevation and scale for
+ *  Bengaluru, over every project and whatever the map was showing. Leaflet knows where
+ *  the pointer is and how far a pixel reaches, so those are reported and nothing else:
+ *  there is no elevation here because the project's DEM is a file on disk that only the
+ *  sidecar reads, and no "1:2,500" because a scale ratio needs the physical size of the
+ *  display, which a browser does not know. Metres per pixel is the same fact without the
+ *  invented half.
+ */
+function MapReadout({ onChange }) {
+  const map = useMap();
+  const at = useRef(null);
+  const lastReport = useRef(0);
+
+  useEffect(() => {
+    const report = () => {
+      lastReport.current = performance.now();
+      const a = map.containerPointToLatLng([0, 0]);
+      const b = map.containerPointToLatLng([100, 0]);
+      onChange({
+        lat: at.current?.lat ?? null,
+        lng: at.current?.lng ?? null,
+        zoom: map.getZoom(),
+        metresPerPixel: map.distance(a, b) / 100,
+      });
+    };
+    // Ten a second. `mousemove` fires per pixel, and each report re-renders a page
+    // holding every polygon in the project; a coordinate readout is not worth making
+    // the map stutter under the hand that is moving it.
+    const move = (e) => {
+      at.current = e.latlng;
+      if (performance.now() - lastReport.current >= 100) report();
+    };
+    const out = () => { at.current = null; report(); };
+
+    map.on('mousemove', move);
+    map.on('mouseout', out);
+    map.on('zoomend', report);
+    report();
+    return () => {
+      map.off('mousemove', move);
+      map.off('mouseout', out);
+      map.off('zoomend', report);
+    };
+  }, [map, onChange]);
+
+  return null;
+}
+
 /* Fix default Leaflet icon path issue */
 delete L.Icon.Default.prototype._getIconUrl;
 L.Icon.Default.mergeOptions({
@@ -135,38 +191,30 @@ L.Icon.Default.mergeOptions({
   shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
 });
 
-/* Generate polygon coordinates around a center point */
-function generateParcelPolygon(center, size = 0.001) {
-  const [lat, lng] = center;
-  const half = size / 2;
-  return [
-    [lat - half, lng - half],
-    [lat - half, lng + half],
-    [lat + half, lng + half],
-    [lat + half, lng - half],
-  ];
-}
-
-function generateBuildingPolygon(center, size = 0.0005) {
-  const [lat, lng] = center;
-  const half = size / 2;
-  return [
-    [lat - half, lng - half * 0.8],
-    [lat - half, lng + half * 0.8],
-    [lat + half * 0.7, lng + half],
-    [lat + half, lng - half * 0.3],
-  ];
-}
-
 /* Layer Panel component */
-function LayerPanel({ layers, onToggle, onClose }) {
-  const groupLabels = {
-    base: 'Base Layers',
-    buildings: 'Buildings',
-    infrastructure: 'Infrastructure',
-    elevation: 'Elevation',
-    survey: 'Survey'
-  };
+/** Why a layer cannot be switched on, or null when it can.
+ *
+ *  A row that does nothing has to say why it does nothing. The two cases are different
+ *  and a reader has to be able to tell them apart: this view does not draw that layer,
+ *  or the project holds nothing for it. Neither is a failure, and neither is a checkbox.
+ */
+function unavailableReason(layer, view, typeCounts) {
+  if (!layer.views.includes(view)) {
+    return `Not drawn in the ${view.toUpperCase()} view.`;
+  }
+  if (layer.unitType && !(typeCounts[layer.unitType] > 0)) {
+    return `This project holds no ${UNIT_TYPE_LABELS[layer.unitType].toLowerCase()} units.`;
+  }
+  return null;
+}
+
+function LayerPanel({ layers, view, typeCounts, onToggle, onOpacity, onClose }) {
+  const [filter, setFilter] = useState('');
+
+  const q = filter.trim().toLowerCase();
+  const groups = Object.entries(layers)
+    .map(([key, items]) => [key, items.filter((l) => l.label.toLowerCase().includes(q))])
+    .filter(([, items]) => items.length);
 
   return (
     <div className="context-panel">
@@ -177,26 +225,46 @@ function LayerPanel({ layers, onToggle, onClose }) {
         </button>
       </div>
       <div className="context-panel-body">
-        <input className="layer-search" placeholder="Search layers..." />
-        {Object.entries(layers).map(([groupKey, items]) => (
+        {/* The box had no handler at all: typing in it filtered nothing. */}
+        <input className="layer-search" placeholder="Filter layers…"
+               value={filter} onChange={(e) => setFilter(e.target.value)} />
+        {groups.map(([groupKey, items]) => (
           <div className="layer-group" key={groupKey}>
-            <div className="layer-group-title">{groupLabels[groupKey]}</div>
-            {items.map((layer) => (
-              <div className="layer-item" key={layer.id}>
-                <label>
-                  <input type="checkbox" checked={layer.checked}
-                    onChange={() => onToggle(groupKey, layer.id)} />
-                  <span>{layer.label}</span>
-                </label>
-                <div className="layer-opacity">
-                  <span>{layer.opacity}%</span>
-                  <button className={`opacity-toggle ${layer.checked ? 'active' : ''}`}
-                    onClick={() => onToggle(groupKey, layer.id)} />
+            <div className="layer-group-title">{LAYER_GROUP_LABELS[groupKey]}</div>
+            {items.map((layer) => {
+              const reason = unavailableReason(layer, view, typeCounts);
+              return (
+                <div className="layer-item" key={layer.id}
+                     style={reason ? { opacity: 0.45 } : undefined} title={reason ?? undefined}>
+                  <label style={reason ? { cursor: 'not-allowed' } : undefined}>
+                    <input type="checkbox" checked={layer.checked && !reason}
+                      disabled={Boolean(reason)}
+                      onChange={() => onToggle(groupKey, layer.id)} />
+                    <span>{layer.label}</span>
+                  </label>
+                  <div className="layer-opacity">
+                    <input type="range" min="0" max="100" step="5"
+                      value={layer.opacity} disabled={Boolean(reason) || !layer.checked}
+                      aria-label={`${layer.label} opacity`}
+                      onChange={(e) => onOpacity(groupKey, layer.id, Number(e.target.value))} />
+                    <span>{layer.opacity}%</span>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         ))}
+        {!groups.length && (
+          <div className="layer-group-title" style={{ textTransform: 'none' }}>
+            No layer matches “{filter}”.
+          </div>
+        )}
+        <div style={{ marginTop: 'var(--sp-4)', fontSize: 'var(--text-xs)',
+                      color: 'var(--text-muted)', lineHeight: 1.6 }}>
+          Only layers one of these views actually draws are listed. A project's rasters —
+          DEM, DSM, orthophoto — are registered as sources and read when heights are
+          derived, but nothing here renders a raster, so there is no switch for one.
+        </div>
       </div>
     </div>
   );
@@ -292,6 +360,9 @@ function Field({ label, value, hint, tone }) {
     </div>
   );
 }
+
+/** How many of a building's floors the lineage list shows before it says so. */
+const VISIBLE_CHILDREN = 12;
 
 function PropertyPanel({ property, onClose, onSelectUnit }) {
   if (!property) return null;
@@ -438,7 +509,7 @@ function PropertyPanel({ property, onClose, onSelectUnit }) {
                 <span className="property-field-label">Contains</span>
                 <span className="property-field-value">{p.children.length}</span>
               </div>
-              {p.children.slice(0, 12).map((c) => (
+              {p.children.slice(0, VISIBLE_CHILDREN).map((c) => (
                 <button className="property-link" key={c.unitId}
                         onClick={() => onSelectUnit(c.unitId)}>
                   <span className="property-field-label">
@@ -448,6 +519,13 @@ function PropertyPanel({ property, onClose, onSelectUnit }) {
                   <span className="property-field-value">{m(c.lower, 1)} – {m(c.upper, 1)}</span>
                 </button>
               ))}
+              {p.children.length > VISIBLE_CHILDREN && (
+                <div className="property-note">
+                  Showing the {VISIBLE_CHILDREN} highest of {p.children.length}. The rest
+                  are in the record, not missing — a forty-storey tower listing twelve
+                  levels reads as a twelve-storey building.
+                </div>
+              )}
             </>
           )}
         </div>
@@ -457,7 +535,19 @@ function PropertyPanel({ property, onClose, onSelectUnit }) {
 }
 
 /* 3D Scene with Three.js */
-function ThreeScene({ selectedBuilding, onSelectBuilding, activeFloor }) {
+/** Which layer switch governs each unit type in the scene.
+ *
+ *  Floors and apartments are absent on purpose: what draws them is which building is
+ *  open, not a layer, and the panel offers no switch that would claim otherwise.
+ */
+const SCENE_LAYER_OF_TYPE = {
+  land_parcel: 'parcels',
+  building: 'envelopes',
+  underground_feature: 'underground',
+  elevated_structure: 'elevated',
+};
+
+function ThreeScene({ selectedBuilding, onSelectBuilding, activeFloor, sceneLayers }) {
   // Read the project here rather than take it as a prop: this is a sibling of the 2D
   // map, not a child of it, and the hook is memoised on the document so both views work
   // from one parse of it.
@@ -549,13 +639,27 @@ function ThreeScene({ selectedBuilding, onSelectBuilding, activeFloor }) {
         elevated_structure: 0x38bdf8,
       };
 
+      // The layer panel's switches, applied where the geometry is built. A checkbox is
+      // only a report of state if the thing it names is genuinely absent when it is off.
+      const shown = (type) => {
+        const key = SCENE_LAYER_OF_TYPE[type];
+        return key ? sceneLayers[key].on : true;
+      };
+      const alpha = (type) => {
+        const key = SCENE_LAYER_OF_TYPE[type];
+        return key ? sceneLayers[key].alpha : 1;
+      };
+
       // Parcels as outlines on the ground, so a building always sits inside something.
-      for (const u of sceneUnits.filter((x) => x.unit_type === 'land_parcel')) {
-        const pts = u.ringMetres.map(([x, y]) => new THREE.Vector3(x - cx, 0.06, -(y - cz)));
-        scene.add(new THREE.Line(
-          new THREE.BufferGeometry().setFromPoints(pts),
-          new THREE.LineBasicMaterial({ color: TYPE_COLOR.land_parcel, opacity: 0.5,
-                                        transparent: true })));
+      if (shown('land_parcel')) {
+        for (const u of sceneUnits.filter((x) => x.unit_type === 'land_parcel')) {
+          const pts = u.ringMetres.map(([x, y]) => new THREE.Vector3(x - cx, 0.06, -(y - cz)));
+          scene.add(new THREE.Line(
+            new THREE.BufferGeometry().setFromPoints(pts),
+            new THREE.LineBasicMaterial({ color: TYPE_COLOR.land_parcel,
+                                          opacity: 0.5 * alpha('land_parcel'),
+                                          transparent: true })));
+        }
       }
 
       // Every unit with a vertical extent becomes the prism it actually is: its own
@@ -572,7 +676,7 @@ function ThreeScene({ selectedBuilding, onSelectBuilding, activeFloor }) {
         if (u.unit_type === 'floor' || u.unit_type === 'apartment') {
           return u.parent_unit_id === selectedBuilding;
         }
-        return true;
+        return shown(u.unit_type);
       });
 
       const pickable = [];
@@ -589,11 +693,13 @@ function ThreeScene({ selectedBuilding, onSelectBuilding, activeFloor }) {
         const selected = selectedBuilding === u.unit_id || activeFloor === u.unit_id;
         const isFloor = u.unit_type === 'floor' || u.unit_type === 'apartment';
         const color = selected ? 0x00ff88 : (TYPE_COLOR[u.unit_type] ?? 0x64748b);
-        // Buildings are opaque. Nine hundred translucent boxes stacked front-to-back
-        // average out to one flat wash of colour, and depth is the whole point here.
+        // Buildings are opaque by default. Nine hundred translucent boxes stacked
+        // front-to-back average out to one flat wash of colour, and depth is the whole
+        // point here — but the layer's own opacity is the operator's call, not ours.
+        const opacity = isFloor ? 0.35 : alpha(u.unit_type);
         const mesh = new THREE.Mesh(geom, new THREE.MeshStandardMaterial({
           color, roughness: 0.55, metalness: 0.05,
-          transparent: isFloor, opacity: isFloor ? 0.35 : 1,
+          transparent: isFloor || opacity < 1, opacity,
           emissive: color, emissiveIntensity: selected ? 0.45 : 0.06,
         }));
         mesh.position.y = u.lower_limit - groundZ;
@@ -607,7 +713,7 @@ function ThreeScene({ selectedBuilding, onSelectBuilding, activeFloor }) {
         const edges = new THREE.LineSegments(
           new THREE.EdgesGeometry(geom),
           new THREE.LineBasicMaterial({ color: selected ? 0x00ff88 : 0x1b3a52,
-                                        opacity: 0.5, transparent: true }));
+                                        opacity: 0.5 * opacity, transparent: true }));
         edges.position.y = mesh.position.y;
         scene.add(edges);
       }
@@ -684,7 +790,7 @@ function ThreeScene({ selectedBuilding, onSelectBuilding, activeFloor }) {
         rendererRef.current = null;
       }
     };
-  }, [selectedBuilding, activeFloor, sceneUnits, projectExtent, drawable]);
+  }, [selectedBuilding, activeFloor, sceneUnits, projectExtent, drawable, sceneLayers]);
 
   // A 3D view of units that have no third dimension is an empty grid, and an empty grid
   // is indistinguishable from a broken renderer. Say which it is. The heights are
@@ -741,6 +847,7 @@ export default function MapPage({ project, view = '2d' }) {
   // HUD reported a selection that did not exist and the floor stack had nothing to open.
   const [selectedBuildingId, setSelectedBuildingId] = useState(null);
   const [activeFloor, setActiveFloor] = useState(null);
+  const [readout, setReadout] = useState(null);
 
   useEffect(() => {
     const handleToggleLayers = () => setShowLayers(prev => !prev);
@@ -748,18 +855,52 @@ export default function MapPage({ project, view = '2d' }) {
     return () => window.removeEventListener('toggle-layers', handleToggleLayers);
   }, []);
 
-  const center = [12.9720, 77.5950];
-
-  const toggleLayer = (group, id) => {
+  const setLayer = (group, id, change) => {
     setLayers(prev => ({
       ...prev,
-      [group]: prev[group].map(l => l.id === id ? { ...l, checked: !l.checked } : l)
+      [group]: prev[group].map(l => l.id === id ? { ...l, ...change(l) } : l)
     }));
   };
+  const toggleLayer = (group, id) => setLayer(group, id, l => ({ checked: !l.checked }));
+  const setOpacity = (group, id, opacity) => setLayer(group, id, () => ({ opacity }));
 
   const geometry = useProjectGeometry();
-  const { parcels: livePercels, buildings: liveBuildings, bounds,
+  const { parcels: livePercels, buildings: liveBuildings, bounds, typeCounts,
           sceneUnits, projectExtent, withHeights } = geometry;
+
+  // One flat view of the switches, so a renderer asks "is this on" rather than hunting
+  // the group a layer happens to live in.
+  const layerById = useMemo(
+    () => Object.fromEntries(Object.values(layers).flat().map(l => [l.id, l])), [layers]);
+  const drawn = (id) => {
+    const l = layerById[id];
+    if (!l || !l.checked) return false;
+    // A toggle for a layer the project has nothing for is disabled in the panel; this is
+    // the same rule at the point of drawing, so the two cannot drift apart.
+    return !l.unitType || typeCounts[l.unitType] > 0;
+  };
+  const alpha = (id) => (layerById[id]?.opacity ?? 100) / 100;
+
+  // Memoised because the 3D scene is rebuilt whenever this changes: a new object every
+  // render would tear down and re-extrude every mesh on every keystroke elsewhere.
+  const sceneLayers = useMemo(() => ({
+    parcels: { on: drawn('parcels'), alpha: alpha('parcels') },
+    envelopes: { on: drawn('envelopes'), alpha: alpha('envelopes') },
+    underground: { on: drawn('underground'), alpha: alpha('underground') },
+    elevated: { on: drawn('elevated'), alpha: alpha('elevated') },
+  }), [layerById, typeCounts]);   // `drawn` and `alpha` read only these two
+
+  // Held stable so that a re-render — the cursor readout updates ten times a second —
+  // does not restyle every polygon in the project on each one.
+  const parcelStyle = useMemo(() => ({
+    color: '#00d4aa', weight: 1.5, fillColor: '#00d4aa',
+    opacity: alpha('parcels'), fillOpacity: 0.08 * alpha('parcels'),
+    dashArray: '4 4',
+  }), [layerById]);
+  const buildingStyle = useMemo(() => ({
+    color: '#0ea5e9', weight: 2, fillColor: '#0ea5e9',
+    opacity: alpha('footprints'), fillOpacity: 0.15 * alpha('footprints'),
+  }), [layerById]);
 
   // Selecting anything opens its record. A 3D view whose click does nothing is a
   // picture of a cadastre rather than a cadastre: the geometry is the index, and the
@@ -777,7 +918,6 @@ export default function MapPage({ project, view = '2d' }) {
     }
     setSelectedProperty(describeUnit(unitId, geometry));
   }, [geometry]);
-  const selectedBuildingData = liveBuildings.find(b => b.unit.unit_id === selectedBuildingId)?.unit;
   // What the HUD reports has to come from the scene, not from a remembered string.
   const sceneBuildingCount = sceneUnits.filter((u) => u.unit_type === 'building').length;
   const selectedBuildingLabel = sceneUnits.find((u) => u.unit_id === selectedBuildingId)?.label
@@ -788,7 +928,11 @@ export default function MapPage({ project, view = '2d' }) {
 
   return (
     <>
-      {showLayers && <LayerPanel layers={layers} onToggle={toggleLayer} onClose={() => setShowLayers(false)} />}
+      {showLayers && (
+        <LayerPanel layers={layers} view={view} typeCounts={typeCounts}
+                    onToggle={toggleLayer} onOpacity={setOpacity}
+                    onClose={() => setShowLayers(false)} />
+      )}
       <div className="map-container">
         <div className="map-tabs">
           <button className={`map-tab${view === '2d' ? ' active' : ''}`}
@@ -817,32 +961,52 @@ export default function MapPage({ project, view = '2d' }) {
         </div>
 
         <div className="map-view">
-          {view === '2d' ? (
+          {view === '2d' && !bounds ? (
+            // The map used to open at [12.9720, 77.5950] zoom 17 — a corner of Bengaluru
+            // — whatever the project was and whether or not it held any geometry. A map
+            // centred on a city the project has nothing to do with is not a neutral
+            // starting point; it is a claim about where this data is.
+            <div className="scene-empty">
+              <div className="scene-empty-title">Nothing to place on a map yet</div>
+              <div className="scene-empty-body">
+                This project holds no geometry, so there is no extent to open the map at.
+                A map has to be centred somewhere, and anywhere chosen for it would be a
+                guess about where your data is.
+                <br /><br />
+                Add a parcel layer or building footprints on the Upload Data screen. The
+                map opens on the project's own bounds as soon as it has some.
+              </div>
+            </div>
+          ) : view === '2d' ? (
             <>
-              <MapContainer center={center} zoom={17} style={{ height: '100%', width: '100%' }}
+              {/* Framed on the project's own extent. `bounds` is what the units say,
+                  so the first thing on screen is this project rather than a place. */}
+              <MapContainer bounds={bounds} boundsOptions={{ padding: [40, 40] }}
+                style={{ height: '100%', width: '100%' }}
                 zoomControl={true} attributionControl={true}>
                 {/* OpenStreetMap, which needs no key. CARTO's dark tiles now require
                     registration and serve an "API KEY REQUIRED" watermark across every
                     tile without one — not something to discover during a demo. The dark
                     treatment is a CSS filter on the tile pane instead. */}
-                <TileLayer
-                  url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-                  className="basemap-dark"
-                  maxZoom={19}
-                  attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-                />
+                {drawn('basemap') && (
+                  <TileLayer
+                    url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+                    className="basemap-dark"
+                    maxZoom={19}
+                    opacity={alpha('basemap')}
+                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                  />
+                )}
 
                 <FitToProject bounds={bounds} />
+                <MapReadout onChange={setReadout} />
 
                 {/* Parcel polygons, from the project */}
-                {livePercels.map(({ unit: parcel, positions }) => (
+                {drawn('parcels') && livePercels.map(({ unit: parcel, positions }) => (
                   <Polygon
                     key={parcel.unit_id}
                     positions={positions}
-                    pathOptions={{
-                      color: '#00d4aa', weight: 1.5, fillColor: '#00d4aa',
-                      fillOpacity: 0.08, dashArray: '4 4'
-                    }}
+                    pathOptions={parcelStyle}
                   >
                     <Popup>
                       <div style={{ fontFamily: 'Inter, sans-serif' }}>
@@ -855,14 +1019,11 @@ export default function MapPage({ project, view = '2d' }) {
                 ))}
 
                 {/* Building footprints, from the project */}
-                {liveBuildings.map(({ unit: building, positions }) => (
+                {drawn('footprints') && liveBuildings.map(({ unit: building, positions }) => (
                   <Polygon
                     key={building.unit_id}
                     positions={positions}
-                    pathOptions={{
-                      color: '#0ea5e9', weight: 2, fillColor: '#0ea5e9',
-                      fillOpacity: 0.15
-                    }}
+                    pathOptions={buildingStyle}
                     eventHandlers={{
                       click: () => selectUnit(building.unit_id)
                     }}
@@ -885,10 +1046,18 @@ export default function MapPage({ project, view = '2d' }) {
               </MapContainer>
 
               <div className="map-info-overlay">
-                <span>Lat: 12.9716°</span>
-                <span>Lon: 77.5946°</span>
-                <span>Elev: 920.45 m</span>
-                <span>Scale 1:2,500</span>
+                {readout?.lat == null ? (
+                  <span>Move the pointer over the map for a position</span>
+                ) : (
+                  <>
+                    <span>Lat: {readout.lat.toFixed(5)}°</span>
+                    <span>Lon: {readout.lng.toFixed(5)}°</span>
+                  </>
+                )}
+                <span>Zoom {readout?.zoom ?? '—'}</span>
+                <span>
+                  {readout ? `${readout.metresPerPixel.toFixed(2)} m/px` : '—'}
+                </span>
               </div>
             </>
           ) : (
@@ -897,6 +1066,7 @@ export default function MapPage({ project, view = '2d' }) {
                 selectedBuilding={selectedBuildingId}
                 onSelectBuilding={selectUnit}
                 activeFloor={activeFloor}
+                sceneLayers={sceneLayers}
               />
               <FloorSlider
                 floors={selectedFloors}

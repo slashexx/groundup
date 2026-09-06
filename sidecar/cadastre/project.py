@@ -81,6 +81,26 @@ class CreatedProject:
     skipped: list[str] = field(default_factory=list)
 
 
+def _correct_vector_provenance(conn: sqlite3.Connection, s) -> None:
+    """Write the operator's declared provenance over the defaults P2 stamped.
+
+    `process_file` takes only the source name and the two accuracies, so provider,
+    capture date and vertical datum kept P2's defaults - and a file from anyone at all
+    was attributed to "Survey of India / DoLR" on a date nobody entered. This block's
+    whole tolerance chain rests on the registry, and an attribution the operator never
+    made is worse than a blank one.
+
+    An UPDATE rather than a re-INSERT: P2 also computed `coverage_wkt`, and replacing the
+    row wholesale would discard it.
+    """
+    conn.execute(
+        "UPDATE source SET name = ?, provider = ?, capture_date = ?, crs = ?, "
+        "vertical_datum = ?, horizontal_accuracy_m = ?, vertical_accuracy_m = ? "
+        "WHERE source_id = ?",
+        (s.name, s.provider, s.capture_date, s.crs, s.vertical_datum,
+         s.horizontal_accuracy_m, s.vertical_accuracy_m, s.source_id))
+
+
 def _register_source(conn: sqlite3.Connection, s, coverage_wkt: str = "") -> None:
     """Write one row of the `source` registry — the table P4's tolerances come from."""
     conn.execute(
@@ -172,6 +192,7 @@ def create(gpkg: Path, settings, sources: list, *,
 
         for s in sources:
             if s.source_type in VECTOR_LAYERS:
+                _correct_vector_provenance(conn, s)
                 continue
             _register_source(conn, s)
             out.sources.append(s.source_id)
@@ -291,6 +312,7 @@ def add_sources(gpkg: Path, settings, sources: list) -> CreatedProject:
     try:
         for s in sources:
             if s.source_type in VECTOR_LAYERS:
+                _correct_vector_provenance(conn, s)
                 continue
             _register_source(conn, s)
             out.sources.append(s.source_id)

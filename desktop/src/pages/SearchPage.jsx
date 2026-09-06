@@ -105,14 +105,17 @@ export default function SearchPage() {
           <div className="search-results">
             {filtered.map((result, i) => (
               <div className="search-result-card" key={i}>
+                {/* The sidecar's status values are lowercase, straight off the unit.
+                    Comparing against 'Approved' meant an approved unit never once
+                    rendered as approved — the one distinction this list exists to make. */}
                 <div style={{
                   width: 44, height: 44, borderRadius: 'var(--radius-md)',
-                  background: result.status === 'Approved' ? 'var(--status-success-bg)' : 'var(--bg-surface)',
+                  background: result.status === 'approved' ? 'var(--status-success-bg)' : 'var(--bg-surface)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0
                 }}>
                   <Icons.Create3D style={{
                     width: 22, height: 22,
-                    color: result.status === 'Approved' ? 'var(--status-success)' : 'var(--text-tertiary)'
+                    color: result.status === 'approved' ? 'var(--status-success)' : 'var(--text-tertiary)'
                   }} />
                 </div>
                 <div style={{ flex: 1 }}>

@@ -372,3 +372,55 @@ def test_a_route_without_a_project_path_is_refused_not_pointed_at_a_stray_file(c
     """
     assert client.get("/cadastre/document").status_code == 422
     assert client.get("/cadastre/runs/latest").status_code == 422
+
+
+# --- provenance is the operator's, not the pipeline's ----------------------------------
+
+def test_a_vector_source_keeps_the_provenance_the_operator_declared(client, tmp_path, parcels):
+    """P2's writer defaults `provider` and `capture_date` and is never told otherwise.
+
+    `process_file` takes only the source name and the two accuracies, so every vector
+    layer was registered as "Survey of India / DoLR" on a fixed date - a file from anyone
+    at all attributed to a national survey nobody involved had touched. The registry is
+    what every tolerance in this block derives from, and what the desktop panel shows a
+    reviewer under "where this came from".
+    """
+    import sqlite3
+
+    db = str(tmp_path / "new.gpkg")
+    r = client.post("/cadastre/project", json=body(tmp_path, [source(
+        parcels, provider="Assam DoLR", capture_date="2026-04-02",
+        name="GHY parcels")]))
+    assert r.status_code == 200, r.text
+
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT name, provider, capture_date, horizontal_accuracy_m "
+        "FROM source WHERE source_type = 'parcel_map'").fetchone()
+    conn.close()
+    assert row["provider"] == "Assam DoLR"
+    assert row["capture_date"] == "2026-04-02"
+    assert row["name"] == "GHY parcels"
+    assert row["horizontal_accuracy_m"] == 0.30
+
+
+def test_a_vector_source_added_later_keeps_its_provenance_too(client, tmp_path, parcels, buildings):
+    """`add_sources` had the same gap, so the fix is shared rather than duplicated."""
+    import sqlite3
+
+    db = str(tmp_path / "new.gpkg")
+    client.post("/cadastre/project", json=body(tmp_path, [source(parcels)]))
+    r = client.post("/cadastre/sources", json={
+        "db_path": db, "ingest": True,
+        "sources": [source(buildings, "footprint", provider="Kerala DoLR",
+                           capture_date="2026-05-15")]})
+    assert r.status_code == 200, r.text
+
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT provider, capture_date FROM source "
+        "WHERE source_type = 'footprint'").fetchone()
+    conn.close()
+    assert (row["provider"], row["capture_date"]) == ("Kerala DoLR", "2026-05-15")

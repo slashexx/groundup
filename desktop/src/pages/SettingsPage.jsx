@@ -1,193 +1,148 @@
-import { useState } from 'react';
-import { Icons } from '../components/Icons';
+import { DataSourceBanner, NothingYet, useCadastreDocument } from '../data/useCadastre';
+
+/**
+ * What this project was created with.
+ *
+ * Every value on this screen is read from the open project's `project_settings` row, and
+ * every one of them is read-only. That is not a missing feature. These numbers were
+ * written once when the project was created and every unit in it already carries them:
+ * the CRS its geometry is stored in, the datum its heights are measured against, the
+ * strata its identifiers were minted under. Changing one here would not migrate anything
+ * — it would leave a register whose units disagree with the project that holds them, and
+ * whose issued identifiers no longer describe the space they name.
+ *
+ * The page used to be local `useState` with no call to the sidecar at all: a Save button
+ * that flashed a green tick and wrote nothing, a CRS read from a key the sidecar does not
+ * send (`crs` rather than `project_crs`) so it always fell back to EPSG:4326 and
+ * contradicted the sidebar two inches away, a ULPIN prefix invented for one demo ward,
+ * and a tile server and AI endpoint no code reads.
+ */
+
+/** One setting, as a value. Not an input: none of these can be changed here. */
+function Setting({ title, desc, value, mono }) {
+  return (
+    <div className="settings-row">
+      <div className="settings-row-label">
+        <div className="settings-row-title">{title}</div>
+        <div className="settings-row-desc">{desc}</div>
+      </div>
+      <div className="settings-row-value">
+        <div style={{
+          padding: '8px 12px', background: 'var(--bg-surface)',
+          borderRadius: 'var(--radius-md)', fontSize: 'var(--text-sm)',
+          color: 'var(--text-primary)',
+          fontFamily: mono ? 'var(--font-mono)' : undefined,
+        }}>
+          {value ?? '—'}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const metres = (v) => (v === null || v === undefined ? null : `${Number(v).toFixed(2)} m`);
 
 export default function SettingsPage({ project }) {
-  const [projectName, setProjectName] = useState(project?.name || '');
-  const [crs, setCrs] = useState(project?.crs || 'EPSG:4326 - WGS 84');
-  const [datum, setDatum] = useState(project?.verticalDatum || 'MSL');
-  const [ulpinPrefix, setUlpinPrefix] = useState('29-BLR-042');
-  const [saved, setSaved] = useState(false);
+  const { doc, live, status, error, reload } = useCadastreDocument();
+  const s = live && doc ? doc.project : null;
 
-  const handleSave = () => {
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
-  };
-
-  // One operator, no sign-in, no user directory. Five named officials with
-  // government email addresses were listed here, none of whom exist. Multi-user
-  // access is FR-11 and needs a real identity store behind it.
-  const users = [];
+  // The scheme version as the identifier itself spells it: `v1` in the settings row is
+  // `V1` in the minted string.
+  const schemeField = s?.ulpin_version
+    ? `V${String(s.ulpin_version).replace(/^v/i, '')}`
+    : 'V…';
 
   return (
     <div className="settings-page">
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 32 }}>
-        <div>
-          <h2 style={{ fontSize: 'var(--text-xl)', fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>
-            Project Settings
-          </h2>
-          <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>
-            Configure project parameters, ULPIN format, and user management
-          </p>
-        </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          {saved && (
-            <span style={{ color: 'var(--status-success)', fontSize: 'var(--text-sm)', display: 'flex', alignItems: 'center', gap: 4 }}>
-              <Icons.Check style={{ width: 14, height: 14 }} /> Saved
-            </span>
-          )}
-          <button className="btn btn-primary" onClick={handleSave}>
-            <Icons.Save style={{ width: 14, height: 14 }} /> Save Changes
-          </button>
-        </div>
+      <div style={{ marginBottom: 24 }}>
+        <h2 style={{ fontSize: 'var(--text-xl)', fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>
+          Project Settings
+        </h2>
+        <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)', maxWidth: 720, lineHeight: 1.6 }}>
+          What this project was created with. These are fixed at creation and shown here
+          rather than offered for editing: every unit already carries them, and every
+          identifier and tolerance in the register was issued against them. Changing one
+          after the fact would not migrate anything — it would leave the record describing
+          a project that no longer exists. A new frame means a new project.
+        </p>
       </div>
 
-      {/* Project Info */}
-      <div className="settings-section">
-        <div className="settings-section-title">Project Information</div>
-        <div className="settings-row">
-          <div className="settings-row-label">
-            <div className="settings-row-title">Project Name</div>
-            <div className="settings-row-desc">Display name for the project</div>
-          </div>
-          <div className="settings-row-value">
-            <input className="form-input" style={{ width: '100%' }} value={projectName}
-              onChange={(e) => setProjectName(e.target.value)} />
-          </div>
-        </div>
-        <div className="settings-row">
-          <div className="settings-row-label">
-            <div className="settings-row-title">Coordinate Reference System</div>
-            <div className="settings-row-desc">Horizontal spatial reference</div>
-          </div>
-          <div className="settings-row-value">
-            <select className="form-select" style={{ width: '100%' }} value={crs} onChange={(e) => setCrs(e.target.value)}>
-              <option>EPSG:4326 - WGS 84</option>
-              <option>EPSG:32643 - UTM Zone 43N</option>
-              <option>EPSG:32644 - UTM Zone 44N</option>
-            </select>
-          </div>
-        </div>
-        <div className="settings-row">
-          <div className="settings-row-label">
-            <div className="settings-row-title">Vertical Datum</div>
-            <div className="settings-row-desc">Height reference system</div>
-          </div>
-          <div className="settings-row-value">
-            <select className="form-select" style={{ width: '100%' }} value={datum} onChange={(e) => setDatum(e.target.value)}>
-              <option value="MSL">MSL (Mean Sea Level)</option>
-              <option value="EGM96">EGM96</option>
-              <option value="EGM2008">EGM2008</option>
-            </select>
-          </div>
-        </div>
+      <div style={{ marginBottom: 16 }}>
+        <DataSourceBanner status={status} error={error} onRetry={reload} />
       </div>
 
-      {/* ULPIN Configuration */}
-      <div className="settings-section">
-        <div className="settings-section-title">ULPIN Configuration</div>
-        <div className="settings-row">
-          <div className="settings-row-label">
-            <div className="settings-row-title">ULPIN Prefix</div>
-            <div className="settings-row-desc">State-City-Ward format prefix</div>
+      {!s ? (
+        <NothingYet title="No settings to show">
+          The project's settings live in the GeoPackage and are read through the sidecar,
+          which is not answering. Nothing is shown rather than the defaults a new project
+          would have been given — those would be a description of some other project.
+        </NothingYet>
+      ) : (
+        <>
+          <div className="settings-section">
+            <div className="settings-section-title">Project</div>
+            <Setting title="Project name" desc="The GeoPackage's own file name"
+                     value={project?.name} />
+            <Setting title="Project file" desc="Where every write in this app lands"
+                     value={project?.db_path} mono />
           </div>
-          <div className="settings-row-value">
-            <input className="form-input" style={{ width: '100%', fontFamily: 'var(--font-mono)' }}
-              value={ulpinPrefix} onChange={(e) => setUlpinPrefix(e.target.value)} />
-          </div>
-        </div>
-        <div className="settings-row">
-          <div className="settings-row-label">
-            <div className="settings-row-title">Format Pattern</div>
-            <div className="settings-row-desc">ULPIN numbering scheme</div>
-          </div>
-          <div className="settings-row-value">
-            <div style={{
-              padding: '8px 12px', background: 'var(--bg-surface)', borderRadius: 'var(--radius-md)',
-              fontFamily: 'var(--font-mono)', fontSize: 'var(--text-sm)', color: 'var(--accent-primary)'
-            }}>
-              {ulpinPrefix}-[Building]-[Floor/Unit]
-            </div>
-            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginTop: 4 }}>
-              Example: {ulpinPrefix}-B318-F04
-            </div>
-          </div>
-        </div>
-      </div>
 
-      {/* User Management */}
-      <div className="settings-section">
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, paddingBottom: 8, borderBottom: '1px solid var(--border-primary)' }}>
-          <span style={{ fontSize: 'var(--text-lg)', fontWeight: 600, color: 'var(--text-primary)' }}>User Management</span>
-          <button className="btn btn-secondary btn-sm" disabled title="User management is not built yet">
-            <Icons.Plus style={{ width: 12, height: 12 }} /> Add User
-          </button>
-        </div>
-        <div className="data-table-wrapper">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>User</th>
-                <th>Role</th>
-                <th>Email</th>
-                <th>Status</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {users.map((user, i) => (
-                <tr key={i}>
-                  <td style={{ color: 'var(--text-primary)', fontWeight: 500 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <div className="user-avatar" style={{ width: 24, height: 24, fontSize: '9px' }}>
-                        {user.name.split(' ').map(n => n[0]).join('')}
-                      </div>
-                      {user.name}
-                    </div>
-                  </td>
-                  <td><span className="property-tag">{user.role}</span></td>
-                  <td>{user.email}</td>
-                  <td>
-                    <span className={`status-badge ${user.status === 'Active' ? 'approved' : 'draft'}`}>
-                      {user.status}
-                    </span>
-                  </td>
-                  <td>
-                    <div style={{ display: 'flex', gap: 4 }}>
-                      <button className="btn btn-ghost btn-sm" disabled title="Not built yet"><Icons.Pencil style={{ width: 12, height: 12 }} /></button>
-                      <button className="btn btn-ghost btn-sm" disabled title="Not built yet"><Icons.Close style={{ width: 12, height: 12 }} /></button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+          <div className="settings-section">
+            <div className="settings-section-title">Coordinate frame</div>
+            <Setting title="Coordinate reference system"
+                     desc="Every footprint is stored in this CRS, in metres. Areas, distances and tolerances are computed in it directly rather than reprojected per operation."
+                     value={s.project_crs} mono />
+            <Setting title="Vertical datum"
+                     desc="What every height in the project is measured against. A unit's base and top mean nothing without it."
+                     value={s.vertical_datum} mono />
+          </div>
 
-      {/* Data Sources */}
-      <div className="settings-section">
-        <div className="settings-section-title">Data Source Configuration</div>
-        <div className="settings-row">
-          <div className="settings-row-label">
-            <div className="settings-row-title">Map Tile Server</div>
-            <div className="settings-row-desc">Base map tile source URL</div>
+          <div className="settings-section">
+            <div className="settings-section-title">Vertical extent</div>
+            <Setting title="Stratum lower limit"
+                     desc="How far below the surface this project's identifiers reach. Nothing deeper can be recorded here."
+                     value={metres(s.stratum_below_limit_m)} />
+            <Setting title="Stratum upper limit"
+                     desc="And how far above it. A tower taller than this needs a project that says so."
+                     value={metres(s.stratum_above_limit_m)} />
           </div>
-          <div className="settings-row-value">
-            <input className="form-input" style={{ width: '100%', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)' }}
-              defaultValue="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png" />
+
+          <div className="settings-section">
+            <div className="settings-section-title">Height derivation</div>
+            <Setting title="Default plinth offset"
+                     desc="Indian construction sits above the surrounding ground. Applied when a building's base is derived from a DEM, and recorded on the unit that used it."
+                     value={metres(s.default_plinth_offset_m)} />
+            <Setting title="Default parapet deduction"
+                     desc="Fixed at zero, and the sidecar refuses anything else: the roof estimator is a median that already returns the roof slab, so a deduction on top would lower every floor in the project with every validation rule still passing."
+                     value={metres(s.default_parapet_deduction_m)} />
           </div>
-        </div>
-        <div className="settings-row">
-          <div className="settings-row-label">
-            <div className="settings-row-title">AI Model Endpoint</div>
-            <div className="settings-row-desc">URL for AI/ML processing service</div>
+
+          <div className="settings-section">
+            <div className="settings-section-title">Identifier and rules</div>
+            <Setting title="ULPIN scheme version"
+                     desc="The version field inside every identifier this project mints. It exists so the format can change when DoLR publishes the official specification without any issued identifier becoming ambiguous."
+                     value={s.ulpin_version} mono />
+            <Setting title="Identifier format"
+                     desc="Minted by the sidecar, never composed here. The 14-character 2D ULPIN is carried through untouched so existing Bhu-Aadhaar records still resolve; the stratum letter and level are readable without a lookup; the last character is an ISO 7064 check character."
+                     value={`[14-char parcel ULPIN]-${schemeField}-[stratum][level]-[sequence]-[check]`}
+                     mono />
+            <Setting title="Ruleset version"
+                     desc="Which set of validation rules this project's findings were produced by."
+                     value={s.ruleset_version} mono />
           </div>
-          <div className="settings-row-value">
-            <input className="form-input" style={{ width: '100%', fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)' }}
-              defaultValue="https://ai.ulpin.gov.in/api/v3" />
+
+          <div className="settings-section">
+            <div className="settings-section-title">People</div>
+            <NothingYet title="One operator, no user directory">
+              This app runs as a single account with no sign-in, so there is nobody to
+              list and no role to grant. Who decided what is still recorded — the sidecar
+              writes the actor onto every acknowledgement, approval and suggestion review
+              — but multi-user access needs a real identity store behind it, and there
+              isn't one yet.
+            </NothingYet>
           </div>
-        </div>
-      </div>
+        </>
+      )}
     </div>
   );
 }

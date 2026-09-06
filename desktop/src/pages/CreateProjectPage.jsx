@@ -2,6 +2,10 @@ import { useEffect, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { Icons } from '../components/Icons';
 import { SidecarUnavailable, cadastre, setProjectPath } from '../data/cadastreApi';
+// Shared with the Upload Data screen. Both add sources to a project, and while each held
+// its own copy of this table the same kind of file was registered at two different
+// accuracies — and every validation tolerance is computed from that number.
+import { SOURCE_KINDS } from '../data/sourceKinds';
 
 /**
  * Create a project from the operator's own data.
@@ -14,74 +18,6 @@ import { SidecarUnavailable, cadastre, setProjectPath } from '../data/cadastreAp
  * `project_settings` step writes that table's single row, and each source writes one row
  * of `source`, which is the table P4 derives every geometric tolerance from.
  */
-
-/** What each source type is called in front of a person, and what it is for.
- *
- *  The keys are the sidecar's `source_type` values, checked against
- *  `GET /cadastre/source-types` on mount — a label here for a type the backend does not
- *  handle is a file the operator picks and the project silently drops.
- *
- *  `accuracy` values are the conservative end of each instrument's usual range, never the
- *  optimistic one. The contract is explicit: under-claiming accuracy is safe, because a
- *  too-tight tolerance turns ordinary measurement noise into reported encroachments and
- *  fills the review queue with false positives until reviewers stop reading it.
- */
-const SOURCE_KINDS = {
-  parcel_map: {
-    label: 'GIS parcel layer',
-    hint: 'Cadastral parcel polygons. The only source that carries the existing 14-character ULPIN every unit inherits.',
-    accept: { name: 'Vector', extensions: ['geojson', 'json', 'gpkg', 'shp'] },
-    accuracy: [0.30, 0.50], datum: 'EGM2008', required: true,
-  },
-  footprint: {
-    label: 'Building footprints',
-    hint: 'Building outlines. Attached to a parcel that holds more than half of each one.',
-    accept: { name: 'Vector', extensions: ['geojson', 'json', 'gpkg', 'shp'] },
-    accuracy: [0.30, 0.50], datum: 'EGM2008',
-  },
-  utility: {
-    label: 'Utility lines — underground or elevated',
-    hint: 'Water, sewer, power, telecom, metro, walkway. Becomes an easement corridor, which is allowed to cross parcel boundaries.',
-    accept: { name: 'Vector', extensions: ['geojson', 'json', 'gpkg', 'shp'] },
-    accuracy: [0.50, 0.50], datum: 'EGM2008',
-  },
-  dem: {
-    label: 'DEM — bare-earth elevation',
-    hint: 'Ground level under the buildings. Without it heights stay absent, which is FR-03 working rather than failing.',
-    accept: { name: 'Raster', extensions: ['tif', 'tiff'] },
-    accuracy: [0.50, 0.30], datum: 'EGM2008',
-  },
-  dsm: {
-    label: 'DSM — surface elevation',
-    hint: 'Roof level. Paired with the DEM to extrude a building and divide it into floors.',
-    accept: { name: 'Raster', extensions: ['tif', 'tiff'] },
-    accuracy: [0.50, 0.30], datum: 'EGM2008',
-  },
-  ortho: {
-    label: 'Drone imagery / orthophoto',
-    hint: 'Basemap and visual evidence for review.',
-    accept: { name: 'Raster', extensions: ['tif', 'tiff', 'jpg', 'png'] },
-    accuracy: [0.10, 0.50], datum: 'EGM2008',
-  },
-  pointcloud: {
-    label: 'LiDAR / 3D point cloud',
-    hint: 'Registered as provenance. The system reads a DEM and DSM derived from it, never the tile itself — so add those too.',
-    accept: { name: 'Point cloud', extensions: ['las', 'laz'] },
-    accuracy: [0.15, 0.10], datum: 'WGS84_ELLIPSOID',
-  },
-  floorplan: {
-    label: 'Building floor plan',
-    hint: 'Provenance for interior subdivision. Floor plans use a local datum: ground floor level is 0.000.',
-    accept: { name: 'Plan', extensions: ['pdf', 'dxf', 'dwg', 'png', 'jpg'] },
-    accuracy: [0.10, 0.10], datum: 'LOCAL_FFL',
-  },
-  survey_control: {
-    label: 'GNSS / CORS survey control',
-    hint: 'Control points the rest of the data is tied to. The most accurate thing in a project, and usually the smallest.',
-    accept: { name: 'Survey', extensions: ['csv', 'txt', 'geojson', 'json'] },
-    accuracy: [0.02, 0.03], datum: 'WGS84_ELLIPSOID',
-  },
-};
 
 /** Projected CRS in metres. P4 does area and distance maths and must not reproject per
  *  operation, so a geographic CRS such as EPSG:4326 is not offered: degrees are not a
