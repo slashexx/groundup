@@ -197,11 +197,28 @@ def new_source_id(source_type: str) -> str:
     return f"SRC-{source_type.upper().replace('_', '-')}-{uuid.uuid4().hex[:6]}"
 
 
+class UnreadableDestination(RuntimeError):
+    """Something is at the destination path and we could not read it.
+
+    Distinct from `ProjectExists`, which means we read it and it holds units. Here we do
+    not know what it holds, which is the case where deleting it is least defensible.
+    """
+
+
 def _units_held(gpkg: Path) -> int:
     """How many units an existing GeoPackage already holds, 0 if it holds none.
 
-    A path that is absent, unreadable, or not one of our projects is not something we
-    would be destroying, so it counts as empty.
+    Absent means zero: there is nothing there to destroy.
+
+    A file we cannot read is NOT zero. This previously returned 0 on any `sqlite3.Error`
+    and reasoned that a path which is "unreadable, or not one of our projects" is not
+    something we would be destroying - exactly backwards. A locked database, a corrupt
+    file, a GeoPackage written by QGIS holding a year of survey work, or one belonging to
+    another tool all raise here, and every one of them was then deleted by the
+    `unlink(missing_ok=True)` two lines after the guard. The only operation in this module
+    that cannot be undone was reachable by any read failure.
+
+    Not being able to read the destination is a reason to stop, not to proceed.
     """
     if not gpkg.exists():
         return 0
@@ -211,8 +228,20 @@ def _units_held(gpkg: Path) -> int:
             return int(conn.execute("SELECT count(*) FROM unit").fetchone()[0])
         finally:
             conn.close()
-    except sqlite3.Error:
-        return 0
+    except sqlite3.OperationalError as err:
+        # "no such table: unit" is the one readable answer that genuinely means empty:
+        # the file opened as SQLite and simply is not one of our projects yet.
+        if "no such table" in str(err).lower():
+            return 0
+        raise UnreadableDestination(
+            f"{gpkg} exists and could not be read: {err}. Refusing to overwrite a file "
+            "whose contents are unknown. Move it aside, or choose another path."
+        ) from err
+    except sqlite3.Error as err:
+        raise UnreadableDestination(
+            f"{gpkg} exists and is not a readable database: {err}. Refusing to overwrite "
+            "a file whose contents are unknown. Move it aside, or choose another path."
+        ) from err
 
 
 def add_sources(gpkg: Path, settings, sources: list) -> CreatedProject:

@@ -347,13 +347,36 @@ def test_registering_elevation_creates_no_floor_units_at_all(project):
     assert b.lower_limit is not None, "the height is the whole point of the run"
 
 
-def test_a_floor_spanning_its_whole_building_is_reported_as_a_duplicate(project):
-    """Why the test above is the shape it is - the rule this was violating."""
+def test_a_single_storey_buildings_own_floor_is_not_a_duplicate(project):
+    """It coincides with its building because the building *is* one storey.
+
+    I first justified `floors=False` above by saying this pair is a duplicate. It is not:
+    the rule was flagging every single-storey building in a project, which over rural
+    India is most of them. The real reason auto-derive creates no floors is that
+    registering elevation measures the envelope and says nothing about the interior -
+    for a one-storey building the subdivision happens to be right, for a seven-storey one
+    it is wrong, and the automatic path cannot tell which it has.
+    """
     derive.derive_heights(project, default_floor_count=1)
     units, rels, sources, settings = store.load_project(project)
     result = validate.run(units, rels, sources, settings)
-    assert any(f.rule_id.value == "GEOM_DUPLICATE" for f in result.findings), \
-        "a floor identical to its building is a duplicate record"
+    assert not [f for f in result.findings if f.rule_id.value == "GEOM_DUPLICATE"]
+
+
+def test_two_unrelated_units_with_the_same_extent_are_still_a_duplicate(project):
+    """The exemption is only the containment pair; a record entered twice still collides."""
+    derive.derive_heights(project, default_floor_count=1)
+    original = store.get_unit(project, "BLD-1")
+    twin = store.get_unit(project, "BLD-1")
+    twin.unit_id = "BLD-1-COPY"
+    twin.ulpin_provisional = None
+    store.save_unit(project, twin)
+    project.commit()
+
+    units, rels, sources, settings = store.load_project(project)
+    result = validate.run(units, rels, sources, settings)
+    assert [f for f in result.findings if f.rule_id.value == "GEOM_DUPLICATE"], \
+        "two buildings with one footprint and one height range is a real duplicate"
 
 
 def test_a_dem_with_no_dsm_extrudes_nothing(project):
@@ -465,3 +488,84 @@ def test_a_declared_storey_count_is_not_replaced_by_a_guess(project):
     after = store.get_unit(project, "BLD-1")
     assert after.attributes["floor_count"] == 4
     assert "floor_count_method" not in after.attributes
+
+
+def test_a_building_that_declares_its_storeys_still_gets_a_floor_stack(project):
+    """The condition for "needs a stack" is having no floors, not having no floor count.
+
+    Those coincide only when nothing declares one. A source that states `floors_count`
+    gives its buildings a count at ingest, so keying the selection off the count skipped
+    every declared building - 28 of 51 on the first dataset that declared any - while the
+    run reported success on the other 23. Silent, and only visible as buildings with no
+    floors under them.
+    """
+    b = store.get_unit(project, "BLD-1")
+    b.attributes = b.attributes | {"floor_count": 4}
+    store.save_unit(project, b)
+    project.commit()
+
+    report = derive.derive_heights(project, estimate_floors=True)
+    assert report.buildings_seen == 1, "declared or not, it has no floors yet"
+    assert report.floors_created == 4, "the count it declared, not a guess"
+
+    after = store.get_unit(project, "BLD-1")
+    assert "floor_count_method" not in after.attributes
+
+
+def test_running_floor_segmentation_twice_does_not_churn_an_estimated_stack(project):
+    """Pressing the button again is cheap: an estimated stack is already this run's work."""
+    first = derive.derive_heights(project, estimate_floors=True)
+    assert first.floors_created > 1
+
+    second = derive.derive_heights(project, estimate_floors=True)
+    assert second.buildings_seen == 0
+    assert second.floors_created == 0
+
+
+def test_height_estimation_gives_a_stack_to_a_building_that_already_has_a_count(project):
+    """Without asking for an estimate: the building has a count and no floors.
+
+    This is the path where "has no stack" is the only thing that can select it. The test
+    above passes even with the old count-based predicate, because asking for an estimate
+    adds a second clause that happens to catch the same building - so it never isolated
+    the bug it was written for.
+    """
+    from cadastre.api import _derive_after_elevation
+
+    b = store.get_unit(project, "BLD-1")
+    b.attributes = b.attributes | {"floor_count": 4}
+    store.save_unit(project, b)
+    project.commit()
+
+    _derive_after_elevation(project)          # heights, no floors
+    assert project.execute(
+        "SELECT count(*) FROM unit WHERE unit_type='floor'").fetchone()[0] == 0
+
+    report = derive.derive_heights(project, estimate_floors=False)
+    assert report.buildings_seen == 1, "extruded, counted, and still has no floors"
+    assert report.floors_created == 4
+
+
+def test_a_parcel_the_dem_does_not_cover_is_reported_not_skipped(project):
+    """An ungrounded parcel keeps an absolute stratum, and that is not a quiet outcome.
+
+    -30/+150 read absolutely over ground at 912 m puts the whole parcel column below its
+    own buildings, so every structure on it raises ESCAPES_PARENT. Skipping the parcel
+    without recording it turned a missing-raster problem into a wall of geometry errors
+    three steps away, with `parcels_grounded` reporting only the ones that worked.
+    """
+    import shapely.geometry
+    from cadastre.models import CreatedBy, Representation, Status, Unit, UnitType
+
+    far = shapely.geometry.box(E + 9000, N + 9000, E + 9050, N + 9050)
+    store.save_unit(project, Unit(
+        unit_id="PCL-FAR", unit_type=UnitType.LAND_PARCEL, status=Status.NEEDS_REVIEW,
+        crs="EPSG:32643", vertical_datum="EGM2008",
+        footprint_2d=shapely.geometry.mapping(far), source_ids=["src"],
+        created_by=CreatedBy.DERIVED, representation=Representation.PRISM,
+        attributes={"parent_ulpin_14": PARENT}))
+    project.commit()
+
+    report = derive.derive_heights(project)
+    assert report.parcels_ungrounded == ["PCL-FAR"]
+    assert "PCL-FAR" in report.as_dict()["parcels_ungrounded"]

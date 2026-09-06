@@ -5,7 +5,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from . import derive, detect, export, ingest_gpkg, project, store, suggestions, validate
@@ -67,11 +67,25 @@ class ProjectCreateRequest(BaseModel):
     """Everything the P1 wizard collects. Mirrors `project_settings` plus the sources."""
 
     db_path: str
-    project_crs: str = "EPSG:32643"
-    vertical_datum: str = "EGM2008"
-    stratum_below_limit_m: float = -30.0
-    stratum_above_limit_m: float = 150.0
-    default_plinth_offset_m: float = 0.6
+    #: Required, with no default. UTM 43N covers India; defaulting to it silently
+    #: reprojected a project in Kenya or Germany into an Indian zone, and every number
+    #: downstream stayed plausible - areas distorted by a factor that grows with distance
+    #: from 75 degrees east, parcels landing in the Bay of Bengal, and no rule able to
+    #: notice, because every unit is stamped with the setting rather than measured
+    #: against it. A CRS is a fact about the operator's data and only they know it.
+    project_crs: str = Field(..., min_length=1)
+    #: Also required. Heights on a local MSL or NAVD88 labelled EGM2008 are wrong by the
+    #: local geoid separation - up to about a hundred metres - while every relative
+    #: relationship between them stays consistent and every rule passes.
+    vertical_datum: str = Field(..., min_length=1)
+    #: The statutory strata a parcel column spans. -30/+150 is an Indian convention, not
+    #: a physical constant, so it is asked for rather than assumed.
+    stratum_below_limit_m: float
+    stratum_above_limit_m: float
+    #: Indian construction sits 0.3-1.0 m above surrounding ground. Elsewhere a
+    #: slab-on-grade building sits at zero, and an assumed 0.6 makes every building in
+    #: the project that much too tall at the base.
+    default_plinth_offset_m: float
     default_parapet_deduction_m: float = 0.0
     ulpin_version: str = "v1"
     ruleset_version: str = "r1"
@@ -195,7 +209,7 @@ def health_check() -> dict[str, str]:
 
 
 @router.get("/units/{unit_id}")
-def read_unit(unit_id: str, db_path: str = "pilot.gpkg") -> dict[str, Any]:
+def read_unit(unit_id: str, db_path: str = Query(..., min_length=1)) -> dict[str, Any]:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     unit = get_unit(conn, unit_id)
@@ -318,7 +332,7 @@ def transition_units(req: BulkTransitionRequest) -> dict[str, Any]:
 def transition_unit_status(
     unit_id: str,
     req: TransitionRequest,
-    db_path: str = "pilot.gpkg",
+    db_path: str = Query(..., min_length=1),
 ) -> dict[str, Any]:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -391,7 +405,7 @@ def run_validation(req: ValidationRequest) -> dict[str, Any]:
 
 
 @router.get("/runs/latest")
-def latest_run(db_path: str = "pilot.gpkg") -> dict[str, Any]:
+def latest_run(db_path: str = Query(..., min_length=1)) -> dict[str, Any]:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
@@ -406,7 +420,7 @@ def latest_run(db_path: str = "pilot.gpkg") -> dict[str, Any]:
 
 @router.post("/findings/{finding_id}/acknowledge")
 def acknowledge(finding_id: str, req: AcknowledgeRequest,
-                db_path: str = "pilot.gpkg") -> dict[str, Any]:
+                db_path: str = Query(..., min_length=1)) -> dict[str, Any]:
     """Record that a reviewer accepts a warning. Errors are not acknowledgeable."""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -422,7 +436,7 @@ def acknowledge(finding_id: str, req: AcknowledgeRequest,
 
 
 @router.get("/ulpin/{ulpin}")
-def lookup_ulpin(ulpin: str, db_path: str = "pilot.gpkg") -> dict[str, Any]:
+def lookup_ulpin(ulpin: str, db_path: str = Query(..., min_length=1)) -> dict[str, Any]:
     """Resolve an identifier, including one that has been replaced or closed.
 
     A closed unit still answers - the identifier is retained forever and never reissued,
@@ -504,7 +518,7 @@ def _source_registry(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 
 
 @router.get("/document")
-def project_document(db_path: str = "pilot.gpkg") -> dict[str, Any]:
+def project_document(db_path: str = Query(..., min_length=1)) -> dict[str, Any]:
     """The whole project in the outbound contract shape, findings included.
 
     This is what P5's `fromP4Document()` already knows how to read, so pointing the
@@ -588,7 +602,7 @@ def receive_suggestions(req: SuggestionBatch) -> dict[str, Any]:
 
 
 @router.get("/suggestions")
-def list_suggestions(db_path: str = "pilot.gpkg",
+def list_suggestions(db_path: str = Query(..., min_length=1),
                      state: str | None = None) -> dict[str, Any]:
     """The review queue. `state=pending` is what a reviewer opens."""
     conn = sqlite3.connect(db_path)
@@ -602,7 +616,7 @@ def list_suggestions(db_path: str = "pilot.gpkg",
 
 @router.post("/suggestions/{suggestion_id}/review")
 def review_suggestion(suggestion_id: str, req: ReviewRequest,
-                      db_path: str = "pilot.gpkg") -> dict[str, Any]:
+                      db_path: str = Query(..., min_length=1)) -> dict[str, Any]:
     """Accept, edit or reject one suggestion. The decision carries a name."""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -828,9 +842,11 @@ def create_project(req: ProjectCreateRequest) -> dict[str, Any]:
     try:
         made = project.create(Path(req.db_path), settings, req.sources,
                               overwrite=req.overwrite)
-    except project.ProjectExists as err:
+    except (project.ProjectExists, project.UnreadableDestination) as err:
         # 409, not 422: the request is well formed, the destination is occupied. The
-        # caller must decide to destroy what is there; we do not decide for them.
+        # caller must decide to destroy what is there; we do not decide for them. An
+        # unreadable destination is the same answer for a stronger reason - we cannot
+        # even say what would be lost.
         raise HTTPException(409, str(err)) from err
     except project.ProjectCreateError as err:
         raise HTTPException(422, str(err)) from err
@@ -840,7 +856,7 @@ def create_project(req: ProjectCreateRequest) -> dict[str, Any]:
     try:
         init_schema(conn)
         report = ingest_gpkg.import_project(conn, load_project(conn)[3])
-        return {
+        result = {
             "db_path": made.db_path,
             "sources": made.sources,
             "layers": made.layers,
@@ -851,6 +867,12 @@ def create_project(req: ProjectCreateRequest) -> dict[str, Any]:
             "provisional_ulpins": report.minted,
             "unresolved_buildings": report.unresolved,
         }
+        # Elevation given to the wizard counts exactly as much as elevation added later.
+        # This was wired only into `/sources`, so a project created with all four files
+        # at once - the obvious way to do it - registered a DEM and a DSM and extruded
+        # nothing. The operator then met an empty 3D view telling them to add elevation
+        # they had already added.
+        return result | _derive_after_elevation(conn)
     except (ingest_gpkg.LayerMissing, ProjectIncomplete) as err:
         raise HTTPException(422, str(err)) from err
     finally:

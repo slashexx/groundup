@@ -44,19 +44,26 @@ def build(footprint: BaseGeometry, dem_path: str, dsm_path: str,
             "Applying the deduction would lower every floor by that amount with nothing "
             "reporting it. Set default_parapet_deduction_m to 0.0 in project_settings.")
 
-    cover = min(raster.coverage(dem_path, footprint), raster.coverage(dsm_path, footprint))
+    # The footprint is in the project CRS; the rasters may be in any. Saying so is what
+    # lets `raster` reproject rather than assume they agree.
+    crs = settings.project_crs
+    cover = min(raster.coverage(dem_path, footprint, crs),
+                raster.coverage(dsm_path, footprint, crs))
     attrs: dict = {"raster_coverage": round(cover, 3)}
 
     if cover >= MIN_COVERAGE:
-        ground = raster.ground_level(dem_path, footprint)
-        roof = raster.roof_level(dsm_path, footprint)
+        ground = raster.ground_level(dem_path, footprint, crs)
+        roof = raster.roof_level(dsm_path, footprint, crs)
         base = ground + settings.default_plinth_offset_m
         top = roof
         attrs |= {"ground_level_m": round(ground, 3), "roof_level_m": round(roof, 3),
                   "plinth_offset_m": settings.default_plinth_offset_m}
     else:
         base = top = None
-        attrs["heights_unavailable"] = "raster coverage below threshold"
+        attrs["heights_unavailable"] = (
+            f"raster coverage {cover:.1%} is below the {MIN_COVERAGE:.0%} "
+            "threshold. Either the rasters do not cover this footprint, or "
+            "they are too coarse for a building this size.")
 
     if floor_count is not None:
         attrs["floor_count"] = floor_count

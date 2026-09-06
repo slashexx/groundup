@@ -39,6 +39,10 @@ from .ulpin.encode import Stratum, format_ulpin, parse_ulpin
 @dataclass
 class DeriveReport:
     parcels_grounded: int = 0
+    #: Parcels the DEM does not cover. Their stratum stays absolute, which puts the
+    #: column below its own buildings and raises ESCAPES_PARENT on every one of them -
+    #: so an unrecorded skip here surfaces as a wall of unexplained geometry errors.
+    parcels_ungrounded: list[str] = field(default_factory=list)
     buildings_seen: int = 0
     heights_derived: int = 0
     floors_created: int = 0
@@ -50,6 +54,7 @@ class DeriveReport:
     def as_dict(self) -> dict:
         return {
             "parcels_grounded": self.parcels_grounded,
+            "parcels_ungrounded": self.parcels_ungrounded,
             "buildings_seen": self.buildings_seen,
             "heights_derived": self.heights_derived,
             "floors_created": self.floors_created,
@@ -111,24 +116,39 @@ def derive_heights(conn: sqlite3.Connection, *, default_floor_count: int = 1,
     _, _, _, settings = load_project(conn)
 
     if dem:
-        report.parcels_grounded = _ground_parcels(conn, dem, settings)
+        report.parcels_grounded = _ground_parcels(conn, dem, settings, report)
 
     # Which buildings this run has anything to do.
     #
     # `lower_limit IS NULL` alone was right when derive was the only thing that extruded.
     # Registering elevation now extrudes on its own, which filled every height in - and
     # left Floor Segmentation permanently selecting nothing, so a project could never get
-    # past one whole-envelope floor per building and the button reported
-    # `buildings seen: 0` for the rest of its life.
+    # past its envelopes and the button reported `buildings seen: 0` for the rest of its
+    # life.
     #
-    # Asking for a storey estimate therefore also revisits buildings that already have a
-    # height but never got a storey count. A building whose count came from the source is
-    # left alone: it has a real number, and replacing it with a guess would be a downgrade.
-    if estimate_floors:
+    # The condition for "needs a stack" is that it has no floors, not that it has no
+    # floor *count*. Those coincide only when nothing declares one: a source that states
+    # `floors_count` gives its buildings a count at ingest, and keying off that skipped
+    # every one of them - 28 of 51 buildings on the first dataset that declared any,
+    # silently, with the run reporting success on the other 23.
+    _NO_STACK = (
+        "NOT EXISTS (SELECT 1 FROM unit_relationship r "
+        "            JOIN unit f ON f.unit_id = r.to_unit_id "
+        "            WHERE r.from_unit_id = unit.unit_id "
+        "              AND r.rel_type = 'contains' AND f.unit_type = 'floor')"
+    )
+    #
+    # Asking for an estimate additionally revisits a stack that was never estimated - a
+    # single floor left by `default_floor_count`, say. A stack that already carries
+    # `floor_count_method` is left alone, so pressing the button twice is cheap. A
+    # declared count is revisited too but produces the same stack: `declared` wins over
+    # the guess below, so a source that states its storeys is never overwritten by one.
+    if floors:
+        clauses = [f"lower_limit IS NULL", _NO_STACK]
+        if estimate_floors:
+            clauses.append("json_extract(attributes, '$.floor_count_method') IS NULL")
         rows = conn.execute(
-            "SELECT unit_id FROM unit WHERE unit_type = ? AND ("
-            "  lower_limit IS NULL"
-            "  OR json_extract(attributes, '$.floor_count') IS NULL)",
+            f"SELECT unit_id FROM unit WHERE unit_type = ? AND ({' OR '.join(clauses)})",
             (UnitType.BUILDING.value,),
         ).fetchall()
     else:
@@ -288,7 +308,7 @@ def _rebuild(building: Unit, footprint, dem: str, dsm: str,
 
 
 def _ground_parcels(conn: sqlite3.Connection, dem: str,
-                    settings: ProjectSettings) -> int:
+                    settings: ProjectSettings, report: DeriveReport) -> int:
     """Anchor each parcel's legal column to the ground beneath it.
 
     `stratum_below_limit_m` and `stratum_above_limit_m` are **relative to ground level at
@@ -312,8 +332,12 @@ def _ground_parcels(conn: sqlite3.Connection, dem: str,
             continue
         footprint = shapely.geometry.shape(parcel.footprint_2d)
         try:
-            ground = raster.ground_level(dem, footprint)
+            ground = raster.ground_level(dem, footprint, settings.project_crs)
         except raster.NoCoverage:
+            # Recorded, not skipped silently. An ungrounded parcel keeps an absolute
+            # stratum, so every building on it fails ESCAPES_PARENT - three steps away
+            # from this line, and looking nothing like a missing-raster problem.
+            report.parcels_ungrounded.append(parcel.unit_id)
             continue
         parcel.lower_limit = ground + settings.stratum_below_limit_m
         parcel.upper_limit = ground + settings.stratum_above_limit_m
