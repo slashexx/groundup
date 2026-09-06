@@ -166,7 +166,7 @@ sidecar/cadastre/
 
 ### 4.1 REST API Reference ([`api.py`](./api.py))
 
-Nineteen operations across seventeen paths on `http://127.0.0.1:8000`, served by
+Twenty operations across eighteen paths on `http://127.0.0.1:8000`, served by
 `cadastre.app:app` — **not** `cadastre.api:router`, which uvicorn starts happily and
 then answers 500 on every request. Interactive docs at `/docs`; `GET /` enumerates the
 paths from the router itself.
@@ -199,6 +199,7 @@ Two conventions apply throughout:
 | | `POST /cadastre/findings/{id}/acknowledge` | a reviewer accepts a warning |
 | **Records** | `GET /cadastre/units/{unit_id}` | one unit, without its geometry |
 | | `POST /cadastre/units/{unit_id}/transition` | move a unit through its lifecycle |
+| | `POST /cadastre/units/transition` | move many, reporting each refusal |
 | | `GET /cadastre/ulpin/{ulpin}` | resolve an identifier, including a closed one |
 | **P4 → P5/P6/P1** | `GET /cadastre/document` | the whole project in the outbound shape |
 
@@ -663,6 +664,36 @@ so approval fails closed.
 - **400** — the lifecycle forbids it: `{"detail": "Cannot transition from needs_review to closed"}`
 - **409** — the ledger refuses: no parent parcel to mint under, or the identifier is
   already issued
+
+---
+
+#### `POST /cadastre/units/transition`
+
+```json
+{ "db_path": "ward42.gpkg", "target_status": "approved", "actor": "bibisha" }
+```
+```json
+{
+ "attempted": 5949, "approved": 4812, "refused": 1137,
+ "refused_by_reason": {
+  "U-… cannot be approved: error OVERLAP_SIBLING. Errors must be fixed and revalidated": 1130,
+  "no parent parcel to mint under": 7
+ },
+ "units": [{"unit_id": "9175aff7-…", "status": "approved", "ulpin": "…"}]
+}
+```
+
+Omit `unit_ids` to act on every unit currently in `needs_review`. Approving a ward one
+unit at a time is not review, it is data entry: 5,949 units is 5,949 clicks, so the
+screen offered no way to finish.
+
+**Every refusal is returned with the reason the guard gave.** A bulk approve reporting a
+single number is worse than none - the guard refuses individual units for individual
+reasons, and "4,812 approved" silently buries the 1,137 that were not. Nothing is rolled
+back on a refusal: the approvable units are approved, which is what was asked for.
+
+Each unit goes through the same `lifecycle.transition` as the single-unit route, so the
+fail-closed guarantee is identical - this is a loop, not a second implementation.
 
 ---
 

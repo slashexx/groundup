@@ -104,6 +104,7 @@ def document(
     units: list[Unit],
     relationships: list[Relationship],
     findings: list[Finding] | None = None,
+    sources: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """The whole project in the shape `contracts/fixtures/demo-parcel.json` publishes.
 
@@ -111,6 +112,13 @@ def document(
     uses the latter because in a fixture they are an expectation; live they are a
     result. Emitting both means a consumer written against the fixture keeps working
     against the endpoint without a coordinated change.
+
+    `sources` is the provenance registry - every accuracy in this block is derived from
+    it. A unit carries `source_ids` and nothing else, so a consumer holding only the
+    document could show which files a unit came from but never what they are worth:
+    "0.30 m, Survey of India" had to be looked up in a database the viewer cannot see.
+    Emitting the registry alongside the units is what makes a displayed tolerance
+    traceable rather than an assertion.
     """
     out: dict[str, Any] = {
         "project": project_to_dict(settings),
@@ -120,6 +128,7 @@ def document(
              "rel_type": r.rel_type.value}
             for r in relationships
         ],
+        "sources": sources or [],
     }
     serialised = [finding_to_dict(f) for f in (findings or [])]
     out["findings"] = serialised

@@ -214,6 +214,79 @@ def read_unit(unit_id: str, db_path: str = "pilot.gpkg") -> dict[str, Any]:
     }
 
 
+class BulkTransitionRequest(BaseModel):
+    db_path: str
+    target_status: str
+    actor: str
+    comment: str | None = None
+    #: Which units to act on. Omitted means every unit currently in `needs_review`,
+    #: which is what "approve everything I have looked at" means on the review screen.
+    unit_ids: list[str] | None = None
+
+
+@router.post("/units/transition")
+def transition_units(req: BulkTransitionRequest) -> dict[str, Any]:
+    """Move many units at once, and say per unit what happened.
+
+    Approving a ward one unit at a time is not review, it is data entry: a project of
+    5,949 units needs 5,949 clicks, so the screen offered no way to finish and the only
+    realistic path was to stop caring. But a bulk approve that reports a single number
+    is worse than none - the guard in `lifecycle.transition` refuses individual units
+    for individual reasons (unvalidated, outstanding errors, no parent parcel), and a
+    summary saying "4,812 approved" silently buries the 1,137 that were refused.
+
+    So every unit is attempted independently and every refusal is returned with the
+    reason the guard gave. Nothing is rolled back on a refusal: the units that were
+    approvable are approved, which is the outcome the reviewer asked for.
+    """
+    conn = sqlite3.connect(req.db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        if req.unit_ids is None:
+            ids = [r["unit_id"] for r in conn.execute(
+                "SELECT unit_id FROM unit WHERE status = 'needs_review'")]
+        else:
+            ids = list(req.unit_ids)
+
+        approved: list[dict[str, Any]] = []
+        refused: list[dict[str, Any]] = []
+        for unit_id in ids:
+            unit = get_unit(conn, unit_id)
+            if unit is None:
+                refused.append({"unit_id": unit_id, "reason": "no such unit"})
+                continue
+            try:
+                lifecycle.transition(conn=conn, unit=unit, target=req.target_status,
+                                     actor=req.actor, comment=req.comment)
+            except (lifecycle.TransitionError, ledger.UnknownParcel,
+                    ledger.AlreadyIssued) as err:
+                # The guard names the unit in its message, so grouping on the raw
+                # string groups nothing: 5,971 refusals for one cause came back as
+                # 5,971 distinct reasons and the screen rendered every one of them.
+                refused.append({"unit_id": unit_id,
+                                "reason": str(err).replace(unit_id, "this unit")})
+                continue
+            save_unit(conn, unit)
+            approved.append({"unit_id": unit_id, "status": unit.status.value,
+                             "ulpin": unit.ulpin})
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Refusals are grouped so a reviewer reads "1,137 have outstanding errors" rather
+    # than scrolling 1,137 identical sentences.
+    by_reason: dict[str, int] = {}
+    for r in refused:
+        by_reason[r["reason"]] = by_reason.get(r["reason"], 0) + 1
+    return {
+        "attempted": len(ids),
+        "approved": len(approved),
+        "refused": len(refused),
+        "refused_by_reason": dict(sorted(by_reason.items(), key=lambda kv: -kv[1])),
+        "units": approved,
+    }
+
+
 @router.post("/units/{unit_id}/transition")
 def transition_unit_status(
     unit_id: str,
@@ -383,6 +456,26 @@ def ingest_geopackage(req: ValidationRequest) -> dict[str, Any]:
         conn.close()
 
 
+#: Columns of the source registry a consumer needs to explain a number it is shown.
+_SOURCE_COLUMNS = ("source_id", "source_type", "name", "provider", "capture_date",
+                   "crs", "vertical_datum", "horizontal_accuracy_m",
+                   "vertical_accuracy_m", "processing_status")
+
+
+def _source_registry(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Every registered source, so a unit's accuracy can be shown next to the unit.
+
+    `load_project` reduces this table to source_id -> Accuracy because that is all
+    validation needs. A screen showing a person why a 0.42 m tolerance was applied needs
+    the rest of the row: which file, whose survey, and when it was captured.
+    """
+    try:
+        rows = conn.execute(f"SELECT {', '.join(_SOURCE_COLUMNS)} FROM source").fetchall()
+    except sqlite3.OperationalError:
+        return []                       # no registry yet; the units say so themselves
+    return [{c: r[c] for c in _SOURCE_COLUMNS} for r in rows]
+
+
 @router.get("/document")
 def project_document(db_path: str = "pilot.gpkg") -> dict[str, Any]:
     """The whole project in the outbound contract shape, findings included.
@@ -396,7 +489,8 @@ def project_document(db_path: str = "pilot.gpkg") -> dict[str, Any]:
     try:
         units, rels, _sources, settings = load_project(conn)
         run = load_latest_run(conn)
-        return export.document(settings, units, rels, run.findings if run else [])
+        return export.document(settings, units, rels, run.findings if run else [],
+                               sources=_source_registry(conn))
     except ProjectIncomplete as err:
         raise HTTPException(422, str(err)) from err
     finally:
