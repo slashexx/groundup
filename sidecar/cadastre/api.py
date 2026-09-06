@@ -155,9 +155,10 @@ def _derive_after_elevation(conn: sqlite3.Connection) -> dict[str, Any]:
     hiding a required step: the elevation was registered, the ingest reported success,
     and the 3D view stayed empty with no indication that anything remained to be done.
 
-    Heights only. `derive` can also divide an envelope into storeys, and that is a guess
-    from an assumed storey height, not a measurement - it stays behind the explicit
-    Floor segmentation button so nothing infers a floor stack on its own.
+    Heights only, and no floor units at all. Dividing an envelope into storeys is a guess
+    from an assumed storey height, and even the un-divided single floor is a unit
+    identical to the building containing it - which validation flags, correctly, as a
+    duplicate. Interior subdivision stays behind the explicit Floor segmentation button.
     """
     kinds = {
         str(r["kind"]).upper()
@@ -170,7 +171,10 @@ def _derive_after_elevation(conn: sqlite3.Connection) -> dict[str, Any]:
     ).fetchone()[0]
     if not pending:
         return {}
-    report = derive.derive_heights(conn, estimate_floors=False)
+    # Heights, and no floor units. A single floor spanning the whole envelope duplicates
+    # the building it sits in, which validation reports as GEOM_DUPLICATE on every one of
+    # them. How a building is divided is a separate question from how tall it is.
+    report = derive.derive_heights(conn, estimate_floors=False, floors=False)
     return {
         "heights_derived": report.heights_derived,
         "heights_skipped_no_raster": len(report.skipped_no_raster),
