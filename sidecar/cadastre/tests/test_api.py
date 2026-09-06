@@ -154,8 +154,19 @@ def test_the_api_reference_states_the_route_count_correctly():
     served = {(m, r.path) for r in router.routes
               for m in getattr(r, "methods", set()) - {"HEAD", "OPTIONS"}}
     words = {14: "Fourteen", 15: "Fifteen", 16: "Sixteen", 17: "Seventeen",
-             18: "Eighteen", 19: "Nineteen", 20: "Twenty"}
-    stated = re.search(r"(\w+) operations across (\w+) paths", readme)
+             18: "Eighteen", 19: "Nineteen", 20: "Twenty",
+             21: "Twenty-one", 22: "Twenty-two", 23: "Twenty-three",
+             24: "Twenty-four", 25: "Twenty-five"}
+    # A count the table cannot name is a gap in this guard, not a passing project. It
+    # would otherwise raise KeyError, which reads as the test being broken rather than
+    # as the reference being unchecked.
+    assert len(served) in words, (
+        f"{len(served)} routes are served and this check cannot spell that. Extend "
+        f"`words` — the reference is going unverified until you do.")
+    # `\w` excludes the hyphen, so a hyphenated number silently matched its own tail:
+    # "Twenty-one operations" was read as "one", and the guard failed claiming the
+    # reference said something it did not.
+    stated = re.search(r"([\w-]+) operations across ([\w-]+) paths", readme)
 
     assert stated, "the reference no longer states how many routes it covers"
     assert stated.group(1) == words[len(served)], (

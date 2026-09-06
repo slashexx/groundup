@@ -166,7 +166,7 @@ sidecar/cadastre/
 
 ### 4.1 REST API Reference ([`api.py`](./api.py))
 
-Twenty operations across eighteen paths on `http://127.0.0.1:8000`, served by
+Twenty-one operations across nineteen paths on `http://127.0.0.1:8000`, served by
 `cadastre.app:app` — **not** `cadastre.api:router`, which uvicorn starts happily and
 then answers 500 on every request. Interactive docs at `/docs`; `GET /` enumerates the
 paths from the router itself.
@@ -193,6 +193,7 @@ Two conventions apply throughout:
 | | `POST /cadastre/suggestions` | take a batch from P3 |
 | | `GET /cadastre/suggestions` | the review queue |
 | | `POST /cadastre/suggestions/{id}/review` | a human accepts, edits or rejects |
+| | `POST /cadastre/suggestions/review` | the same, for the whole queue |
 | | `POST /cadastre/suggestions/apply` | reviewed suggestions become units |
 | **Checking** | `POST /cadastre/validate` | run every rule, persist the result |
 | | `GET /cadastre/runs/latest` | the most recent run and its findings |
@@ -514,6 +515,32 @@ against it, and there is no code path around this call.
 - An unsigned decision is refused (**400**), by the API and by a second `CHECK`.
 - **409** once the suggestion has become a unit: the unit has its own lifecycle from that
   point, and rewinding would mean orphaning it or withdrawing an allocated identity.
+
+---
+
+#### `POST /cadastre/suggestions/review`
+
+```json
+{ "db_path": "ward42.gpkg", "state": "accepted", "actor": "bibisha" }
+```
+```json
+{ "attempted": 727, "decided": 727, "state": "accepted",
+  "refused": 0, "refused_by_reason": {} }
+```
+
+Omit `suggestion_ids` to decide every suggestion still `pending` — the queue as it
+stands, never anything a person has already ruled on.
+
+P3 returns 727 detections over a ward. Ruling on them one at a time is not review: a
+screen offering only single decisions offers no way to finish, so the operator either
+stops or clicks until they stop reading, which is worse than not reviewing at all.
+
+**This is not a route around FR-05.** The decision still carries a name and a state,
+each suggestion goes through the same `suggestions.review`, and nothing becomes a unit
+until `apply` is called separately. What it removes is the clicking, not the step.
+
+A suggestion that has already become a unit is refused rather than re-decided, and every
+refusal comes back with its reason.
 
 ---
 

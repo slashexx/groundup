@@ -449,3 +449,136 @@ def test_the_stored_suggestion_still_satisfies_the_inbound_contract(project):
     out = suggestions.listing(project)[0]
     del out["unit_id"]                      # our bookkeeping, not part of the contract
     assert not [e.message for e in schema.iter_errors(out)]
+
+
+# --- deciding many at once, without becoming a shortcut past FR-05 ---------------------
+
+@pytest.fixture
+def bulk(tmp_path):
+    """The bulk route over a real file, since it opens its own connection."""
+    from cadastre.api import router
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    db = tmp_path / "bulk.gpkg"
+    conn = store.connect(str(db))
+    store.init_schema(conn)
+    store.save_unit(conn, Unit(
+        unit_id="PCL-1", unit_type=UnitType.LAND_PARCEL, status=Status.NEEDS_REVIEW,
+        crs="EPSG:32643", vertical_datum="EGM2008",
+        footprint_2d=shapely.geometry.mapping(PARCEL), source_ids=["src-parcels"],
+        created_by=CreatedBy.DERIVED, representation=Representation.PRISM,
+        attributes={"parent_ulpin_14": PARENT}))
+    conn.commit()
+    app = FastAPI()
+    app.include_router(router)
+    return TestClient(app), str(db), conn
+
+
+def test_accepting_every_pending_suggestion_decides_all_of_them(bulk):
+    """P3 returns 727 detections over a ward; ruling on them one at a time is not review.
+
+    A screen that offers only single decisions offers no way to finish - the operator
+    stops, or clicks until they stop reading, which is worse than not reviewing.
+    """
+    client, db, conn = bulk
+    raws = [suggestion() for _ in range(5)]
+    suggestions.receive(conn, raws, SETTINGS)
+    conn.commit()
+
+    r = client.post("/cadastre/suggestions/review", json={
+        "db_path": db, "state": "accepted", "actor": "bibisha"})
+    assert r.status_code == 200, r.text
+    got = r.json()
+    assert (got["attempted"], got["decided"], got["refused"]) == (5, 5, 0)
+
+    states = [row[0] for row in conn.execute(
+        "SELECT review_state FROM ai_suggestion")]
+    assert states == ["accepted"] * 5
+
+
+def test_bulk_accepting_still_creates_no_units(bulk):
+    """FR-05 is a sequence, not a flag. This removes the clicking, not the step."""
+    client, db, conn = bulk
+    suggestions.receive(conn, [suggestion() for _ in range(3)], SETTINGS)
+    conn.commit()
+
+    client.post("/cadastre/suggestions/review", json={
+        "db_path": db, "state": "accepted", "actor": "bibisha"})
+
+    assert conn.execute(
+        "SELECT count(*) FROM unit WHERE unit_type = 'building'").fetchone()[0] == 0
+
+
+def test_bulk_review_records_who_decided(bulk):
+    """A decision that carries no name is not a decision anybody made."""
+    client, db, conn = bulk
+    suggestions.receive(conn, [suggestion()], SETTINGS)
+    conn.commit()
+
+    client.post("/cadastre/suggestions/review", json={
+        "db_path": db, "state": "accepted", "actor": "bibisha"})
+
+    row = conn.execute(
+        "SELECT reviewed_by, reviewed_at FROM ai_suggestion").fetchone()
+    assert row["reviewed_by"] == "bibisha"
+    assert row["reviewed_at"] is not None
+
+
+def test_bulk_review_leaves_alone_what_a_person_already_ruled_on(bulk):
+    """Omitting the list means "the queue as it stands", not "everything, again"."""
+    client, db, conn = bulk
+    raws = [suggestion() for _ in range(3)]
+    suggestions.receive(conn, raws, SETTINGS)
+    suggestions.review(conn, raws[0]["suggestion_id"], "rejected", "bibisha")
+    conn.commit()
+
+    got = client.post("/cadastre/suggestions/review", json={
+        "db_path": db, "state": "accepted", "actor": "someone-else"}).json()
+    assert got["attempted"] == 2
+
+    row = conn.execute(
+        "SELECT review_state, reviewed_by FROM ai_suggestion WHERE suggestion_id = ?",
+        (raws[0]["suggestion_id"],)).fetchone()
+    assert (row["review_state"], row["reviewed_by"]) == ("rejected", "bibisha")
+
+
+def test_bulk_review_refuses_an_already_applied_suggestion_and_says_so(bulk):
+    """Re-deciding one that is already a unit would rewrite a record that exists."""
+    client, db, conn = bulk
+    raw = suggestion()
+    suggestions.receive(conn, [raw], SETTINGS)
+    suggestions.review(conn, raw["suggestion_id"], "accepted", "bibisha")
+    suggestions.apply(conn, SETTINGS)
+    conn.commit()
+
+    got = client.post("/cadastre/suggestions/review", json={
+        "db_path": db, "state": "rejected", "actor": "someone-else",
+        "suggestion_ids": [raw["suggestion_id"]]}).json()
+    assert got["decided"] == 0
+    assert got["refused"] == 1
+    assert not any(raw["suggestion_id"] in r for r in got["refused_by_reason"]), \
+        "the id is substituted out so one cause groups as one reason"
+
+
+def test_refusals_naming_a_different_record_still_group_as_one_cause(bulk):
+    """The message names the *unit* a suggestion became, not the suggestion.
+
+    Substituting only the id being acted on left the other one in, so three refusals for
+    one cause came back as three reasons - the same failure as before, one layer down.
+    Over 727 suggestions that is 727 lines of the same sentence.
+    """
+    client, db, conn = bulk
+    raws = [suggestion() for _ in range(3)]
+    suggestions.receive(conn, raws, SETTINGS)
+    for raw in raws:
+        suggestions.review(conn, raw["suggestion_id"], "accepted", "bibisha")
+    suggestions.apply(conn, SETTINGS)
+    conn.commit()
+
+    got = client.post("/cadastre/suggestions/review", json={
+        "db_path": db, "state": "rejected", "actor": "someone-else",
+        "suggestion_ids": [r["suggestion_id"] for r in raws]}).json()
+    assert got["refused"] == 3
+    assert len(got["refused_by_reason"]) == 1, got["refused_by_reason"]
+    assert list(got["refused_by_reason"].values()) == [3]

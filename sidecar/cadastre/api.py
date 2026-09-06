@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -218,6 +219,32 @@ def read_unit(unit_id: str, db_path: str = "pilot.gpkg") -> dict[str, Any]:
     }
 
 
+#: Anything shaped like a uuid, so a refusal groups by its cause and not by who hit it.
+_UUID = re.compile(
+    r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")
+
+
+def _cause(err: Exception, *ids: str) -> str:
+    """The reason a refusal happened, with the identities taken out.
+
+    Guards name records in their messages - the one being refused, and often a second one
+    it collides with. Grouping on the raw string therefore groups nothing: 5,971 refusals
+    for one cause came back as 5,971 distinct reasons and a screen rendered every one.
+
+    Both halves are needed. Substituting only the id being acted on leaves the *other*
+    record in, which is the same failure one layer down; stripping only uuids misses an
+    identifier that is not one, and a register is full of those - a parcel's local id, a
+    source id, an ULPIN.
+    """
+    # The acted-on id first, so it reads as "this one" rather than being swallowed by
+    # the uuid pass and made indistinguishable from the record it collided with.
+    reason = str(err)
+    for identifier in ids:
+        if identifier:
+            reason = reason.replace(identifier, "this one")
+    return _UUID.sub("another record", reason)
+
+
 class BulkTransitionRequest(BaseModel):
     db_path: str
     target_status: str
@@ -264,11 +291,7 @@ def transition_units(req: BulkTransitionRequest) -> dict[str, Any]:
                                      actor=req.actor, comment=req.comment)
             except (lifecycle.TransitionError, ledger.UnknownParcel,
                     ledger.AlreadyIssued) as err:
-                # The guard names the unit in its message, so grouping on the raw
-                # string groups nothing: 5,971 refusals for one cause came back as
-                # 5,971 distinct reasons and the screen rendered every one of them.
-                refused.append({"unit_id": unit_id,
-                                "reason": str(err).replace(unit_id, "this unit")})
+                refused.append({"unit_id": unit_id, "reason": _cause(err, unit_id)})
                 continue
             save_unit(conn, unit)
             approved.append({"unit_id": unit_id, "status": unit.status.value,
@@ -594,6 +617,67 @@ def review_suggestion(suggestion_id: str, req: ReviewRequest,
         raise HTTPException(400, str(err)) from err
     finally:
         conn.close()
+
+
+class BulkReviewRequest(BaseModel):
+    db_path: str
+    state: str
+    actor: str
+    #: Which suggestions to decide. Omitted means every one still pending - the queue as
+    #: it stands, not including anything a person has already ruled on.
+    suggestion_ids: list[str] | None = None
+
+
+@router.post("/suggestions/review")
+def review_suggestions(req: BulkReviewRequest) -> dict[str, Any]:
+    """Decide many suggestions at once, and say per suggestion what happened.
+
+    P3 returns 727 detections over a ward. Ruling on them one at a time is not review,
+    and a screen offering only that offers no way to finish - the operator either stops
+    or clicks until they stop reading, which is worse than not reviewing at all.
+
+    This is deliberately not a shortcut past FR-05: the decision still carries a name and
+    a state, each suggestion goes through the same `suggestions.review`, and nothing
+    becomes a unit until `apply` is called separately. What it removes is the clicking,
+    not the step.
+
+    A suggestion already applied is refused rather than re-decided, and every refusal
+    comes back with its reason - a bulk action reporting only a count is how a queue
+    stops shrinking with nobody able to say why.
+    """
+    conn = sqlite3.connect(req.db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        if req.suggestion_ids is None:
+            ids = [r["suggestion_id"] for r in conn.execute(
+                "SELECT suggestion_id FROM ai_suggestion WHERE review_state = 'pending'")]
+        else:
+            ids = list(req.suggestion_ids)
+
+        decided: list[str] = []
+        refused: list[dict[str, str]] = []
+        for suggestion_id in ids:
+            try:
+                suggestions.review(conn, suggestion_id, req.state, req.actor, None)
+            except (KeyError, suggestions.AlreadyApplied, ValueError) as err:
+                refused.append({"suggestion_id": suggestion_id,
+                                "reason": _cause(err, suggestion_id)})
+                continue
+            decided.append(suggestion_id)
+        conn.commit()
+    finally:
+        conn.close()
+
+    by_reason: dict[str, int] = {}
+    for r in refused:
+        by_reason[r["reason"]] = by_reason.get(r["reason"], 0) + 1
+    return {
+        "attempted": len(ids),
+        "decided": len(decided),
+        "state": req.state,
+        "refused": len(refused),
+        "refused_by_reason": dict(sorted(by_reason.items(), key=lambda kv: -kv[1])),
+    }
 
 
 @router.post("/suggestions/apply")
