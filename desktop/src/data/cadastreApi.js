@@ -188,6 +188,15 @@ export const cadastre = {
   /** Move many units at once. Every refusal comes back with the guard's own reason:
    *  a bulk approve reporting only a success count buries the units it could not move,
    *  and which reason applied is exactly what the reviewer's next action depends on. */
+  /** Decide many suggestions at once. Not a route around FR-05: the decision still
+   *  carries a name, and nothing becomes a unit until `applySuggestions`. Omit `ids` to
+   *  act on everything still pending — never on what a person has already ruled on. */
+  reviewSuggestions: (state, actor, ids = null) =>
+    request('/cadastre/suggestions/review', {
+      method: 'POST',
+      body: { db_path: DB, state, actor, suggestion_ids: ids },
+    }),
+
   transitionAll: (target, actor, unitIds = null, comment = null) =>
     request('/cadastre/units/transition', {
       method: 'POST',

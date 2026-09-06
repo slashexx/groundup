@@ -55,6 +55,8 @@ export default function AIToolsPage() {
   const [queueError, setQueueError] = useState(null);
   const [busy, setBusy] = useState(null);
   const [actionError, setActionError] = useState(null);
+  // What a bulk decision did, including anything it would not touch.
+  const [bulk, setBulk] = useState(null);
 
   const loadSuggestions = useCallback(async () => {
     setQueueState('reading');
@@ -99,6 +101,30 @@ export default function AIToolsPage() {
     setActionError(null);
     try {
       await cadastre.reviewSuggestion(suggestion.id, state, 'reviewer');
+      await loadSuggestions();
+    } catch (e) {
+      setActionError(e.message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  /** Decide the whole pending queue in one call.
+   *
+   * P3 returns 727 detections over a ward and the screen offered only per-card buttons,
+   * so there was no way to finish: you stop, or you click until you stop reading, which
+   * is worse than not reviewing. This removes the clicking, not the step — the decision
+   * still carries a name, and nothing becomes a unit until Apply is pressed separately.
+   *
+   * Accepting in bulk is a real judgement, so the button says how many and what it will
+   * do rather than reading as a tidy-up.
+   */
+  const decideAll = async (state) => {
+    setBusy('bulk');
+    setActionError(null);
+    try {
+      const res = await cadastre.reviewSuggestions(state, 'reviewer');
+      setBulk(res);
       await loadSuggestions();
     } catch (e) {
       setActionError(e.message);
@@ -209,6 +235,19 @@ export default function AIToolsPage() {
           <h3 style={{ fontSize: 'var(--text-md)', fontWeight: 600, color: 'var(--text-primary)' }}>
             AI Results — Pending Review ({pending})
           </h3>
+          <div style={{ display: 'flex', gap: 8 }}>
+          <button className="btn btn-secondary btn-sm" onClick={() => decideAll('rejected')}
+            disabled={!live || pending === 0 || busy !== null}
+            title={pending === 0 ? 'Nothing is pending'
+              : `Reject all ${pending} pending suggestion(s)`}>
+            Reject {pending}
+          </button>
+          <button className="btn btn-secondary btn-sm" onClick={() => decideAll('accepted')}
+            disabled={!live || pending === 0 || busy !== null}
+            title={pending === 0 ? 'Nothing is pending'
+              : `Accept all ${pending} pending suggestion(s). They become units only when you press Apply.`}>
+            <Icons.Check style={{ width: 12, height: 12 }} /> Accept all {pending}
+          </button>
           <button className="btn btn-primary btn-sm" onClick={applyAccepted}
             disabled={!live || acceptedCount === 0 || busy !== null}
             title={acceptedCount === 0
@@ -216,7 +255,37 @@ export default function AIToolsPage() {
               : `Turn ${acceptedCount} accepted suggestion(s) into building units`}>
             <Icons.Check style={{ width: 12, height: 12 }} /> Apply {acceptedCount} Accepted
           </button>
+          </div>
         </div>
+
+        {bulk && (
+          <div className="bulk-result" style={{ marginBottom: 16 }}>
+            <div className="bulk-result-head">
+              <span className="bulk-result-count">
+                {bulk.decided.toLocaleString()} {bulk.state}
+              </span>
+              <span className="bulk-result-of">of {bulk.attempted.toLocaleString()} pending</span>
+            </div>
+            <div className="bulk-result-note">
+              {bulk.state === 'accepted'
+                ? 'Still suggestions. Press Apply to turn them into units — that is the step that creates records.'
+                : 'Rejected suggestions stay in the record as decisions, and never become units.'}
+            </div>
+            {bulk.refused > 0 && (
+              <>
+                <div className="bulk-result-refused">
+                  {bulk.refused.toLocaleString()} were not decided.
+                </div>
+                {Object.entries(bulk.refused_by_reason).slice(0, 6).map(([reason, n]) => (
+                  <div className="bulk-reason" key={reason}>
+                    <span className="bulk-reason-count">{n.toLocaleString()}</span>
+                    <span className="bulk-reason-text">{reason}</span>
+                  </div>
+                ))}
+              </>
+            )}
+          </div>
+        )}
 
         {actionError && (
           <div style={{
