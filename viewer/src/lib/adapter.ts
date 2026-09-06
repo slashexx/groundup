@@ -50,7 +50,11 @@ interface RawFinding {
 }
 
 export interface FixtureDocument {
-  project?: { stratum_below_limit_m?: number }
+  project?: {
+    stratum_below_limit_m?: number
+    /** The project CRS as proj4, supplied by the sidecar. See `projectionFor`. */
+    project_proj4?: string | null
+  }
   units: RawUnit[]
   relationships?: RawRelationship[]
   /** Live results from P4's `/cadastre/document`. */
@@ -59,8 +63,21 @@ export interface FixtureDocument {
   expected_findings?: RawFinding[]
 }
 
-/** UTM EPSG codes (326xx north / 327xx south) cover our pilot areas. */
-function projectionFor(crs: string): string {
+/**
+ * The proj4 definition for a project's CRS.
+ *
+ * proj4js carries no CRS database, so this used to derive the definition arithmetically
+ * from the EPSG code and supported UTM alone — throwing `Unsupported CRS` on anything
+ * else. The creation wizard offers EPSG:7755 (India TM, a Lambert conformal conic), so
+ * choosing it built a project whose map could not draw it: the user got an error panel
+ * where the map should be, naming a CRS the app had just offered them.
+ *
+ * `project_proj4` comes from the sidecar, which has pyproj and therefore the whole EPSG
+ * registry. A national grid, a state plane, any projection at all arrives ready to use.
+ * The UTM arithmetic stays as a fallback for a document that predates the field.
+ */
+function projectionFor(crs: string, supplied?: string | null): string {
+  if (supplied) return supplied
   const code = Number(crs.replace('EPSG:', ''))
   if (code >= 32601 && code <= 32660) {
     return `+proj=utm +zone=${code - 32600} +datum=WGS84 +units=m +no_defs`
@@ -68,11 +85,14 @@ function projectionFor(crs: string): string {
   if (code >= 32701 && code <= 32760) {
     return `+proj=utm +zone=${code - 32700} +south +datum=WGS84 +units=m +no_defs`
   }
-  throw new Error(`Unsupported CRS ${crs} — extend projectionFor() in adapter.ts`)
+  if (code === 4326) return '+proj=longlat +datum=WGS84 +no_defs'
+  throw new Error(
+    `Cannot draw a project in ${crs}: the sidecar supplied no proj4 definition for it ` +
+    `and it is not a UTM zone. Check that ${crs} is a code the projection database knows.`)
 }
 
-function toWgs84Ring(ring: number[][], crs: string): number[][] {
-  const proj = projectionFor(crs)
+function toWgs84Ring(ring: number[][], crs: string, supplied?: string | null): number[][] {
+  const proj = projectionFor(crs, supplied)
   return ring.map(([x, y]) => proj4(proj, 'EPSG:4326', [x, y]))
 }
 
@@ -132,7 +152,7 @@ export function fromP4Document(doc: FixtureDocument): ViewerUnit[] {
     parent_id: parentOf.get(u.unit_id) ?? null,
     easement: u.attributes?.easement === true,
     subdivided: typeof u.attributes?.subdivided === 'boolean' ? u.attributes.subdivided : null,
-    ring: toWgs84Ring(u.footprint_2d.coordinates[0], u.crs),
+    ring: toWgs84Ring(u.footprint_2d.coordinates[0], u.crs, doc.project?.project_proj4),
     base_m: u.lower_limit == null ? null : u.lower_limit - groundM,
     top_m: u.upper_limit == null ? null : u.upper_limit - groundM,
     raw: {

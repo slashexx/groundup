@@ -225,3 +225,45 @@ def test_cors_allows_the_desktop_shell_and_refuses_a_stranger():
     assert allowed.headers["access-control-allow-origin"] == "http://localhost:1420"
     stranger = c.get("/cadastre/health", headers={"Origin": "https://evil.example"})
     assert "access-control-allow-origin" not in stranger.headers
+
+
+# --- a consumer that has no CRS database ----------------------------------------------
+
+def test_the_document_publishes_the_projection_not_just_the_code():
+    """proj4js carries no CRS database, so a code alone is not enough to draw a map.
+
+    `adapter.ts` derived the definition arithmetically from the EPSG number and supported
+    UTM alone, throwing `Unsupported CRS` on anything else - including EPSG:7755, which
+    the creation wizard offers. Choosing it built a project whose map could not draw it:
+    an error panel naming a CRS the app had just recommended.
+    """
+    from cadastre.export import project_to_dict
+    from cadastre.loader import settings_from_dict
+
+    def settings(crs):
+        return settings_from_dict({
+            "project_crs": crs, "vertical_datum": "EGM2008",
+            "stratum_below_limit_m": -30.0, "stratum_above_limit_m": 150.0,
+            "default_plinth_offset_m": 0.6, "default_parapet_deduction_m": 0.0,
+            "ulpin_version": "v1", "ruleset_version": "r1"})
+
+    # A UTM zone, a Lambert conformal conic, a transverse Mercator national grid.
+    for crs, marker in (("EPSG:32643", "+proj=utm"),
+                        ("EPSG:7755", "+proj=lcc"),
+                        ("EPSG:27700", "+proj=tmerc")):
+        out = project_to_dict(settings(crs))
+        assert out["project_crs"] == crs
+        assert out["project_proj4"] and marker in out["project_proj4"], crs
+
+
+def test_an_unresolvable_crs_publishes_no_projection_rather_than_a_wrong_one():
+    """The consumer still has the code and can say what it could not resolve."""
+    from cadastre.export import project_to_dict
+    from cadastre.loader import settings_from_dict
+
+    out = project_to_dict(settings_from_dict({
+        "project_crs": "EPSG:not-a-code", "vertical_datum": "EGM2008",
+        "stratum_below_limit_m": -30.0, "stratum_above_limit_m": 150.0,
+        "default_plinth_offset_m": 0.6, "default_parapet_deduction_m": 0.0,
+        "ulpin_version": "v1", "ruleset_version": "r1"}))
+    assert out["project_proj4"] is None
