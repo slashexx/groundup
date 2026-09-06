@@ -108,6 +108,22 @@ def roof_level(dsm_path: str | Path, footprint: BaseGeometry,
     return float(np.median(sample(dsm_path, footprint, footprint_crs)))
 
 
+def valid_pixels(raster_path: str | Path, footprint: BaseGeometry,
+                 footprint_crs: str | None = None) -> int:
+    """How many valid cells actually sit under the footprint.
+
+    A fraction cannot express "this raster is too coarse for this building". A 20 m2
+    footprint on a 5 m DEM covers well under one cell, so a single valid pixel is 100%
+    coverage - and the median of one number is that number, published as a measured roof
+    level with nothing marking it as a sample of one.
+    """
+    try:
+        arr, _, _, _ = _masked(raster_path, footprint, footprint_crs)
+    except NoCoverage:
+        return 0
+    return int((~np.ma.getmaskarray(arr)).sum())
+
+
 def coverage(raster_path: str | Path, footprint: BaseGeometry,
              footprint_crs: str | None = None) -> float:
     """Fraction of the footprint with valid data, 0.0-1.0.

@@ -14,6 +14,15 @@ from . import raster
 #: a handful of them into a confident-looking number.
 MIN_COVERAGE = 0.6
 
+#: And below this many cells, whatever the fraction says.
+#:
+#: A fraction cannot express "this raster is too coarse for this building". A 20 m2
+#: footprint on a 5 m DEM covers less than one cell, so one valid pixel is 100% coverage
+#: and the median of one number is that number - published as a measured roof level, with
+#: nothing recording that it came from a single sample. Nine cells is a 3x3 neighbourhood,
+#: the smallest window in which a median means anything at all.
+MIN_VALID_PIXELS = 9
+
 
 class EstimatorMismatch(ValueError):
     """The project asks for a parapet deduction the roof estimator does not need.
@@ -49,9 +58,11 @@ def build(footprint: BaseGeometry, dem_path: str, dsm_path: str,
     crs = settings.project_crs
     cover = min(raster.coverage(dem_path, footprint, crs),
                 raster.coverage(dsm_path, footprint, crs))
-    attrs: dict = {"raster_coverage": round(cover, 3)}
+    cells = min(raster.valid_pixels(dem_path, footprint, crs),
+                raster.valid_pixels(dsm_path, footprint, crs))
+    attrs: dict = {"raster_coverage": round(cover, 3), "raster_cells": cells}
 
-    if cover >= MIN_COVERAGE:
+    if cover >= MIN_COVERAGE and cells >= MIN_VALID_PIXELS:
         ground = raster.ground_level(dem_path, footprint, crs)
         roof = raster.roof_level(dsm_path, footprint, crs)
         base = ground + settings.default_plinth_offset_m
@@ -61,9 +72,12 @@ def build(footprint: BaseGeometry, dem_path: str, dsm_path: str,
     else:
         base = top = None
         attrs["heights_unavailable"] = (
-            f"raster coverage {cover:.1%} is below the {MIN_COVERAGE:.0%} "
-            "threshold. Either the rasters do not cover this footprint, or "
-            "they are too coarse for a building this size.")
+            f"only {cells} valid raster cell(s) under this footprint "
+            f"({cover:.1%} coverage). A median needs more than a handful of samples, "
+            f"so the height is left unknown rather than measured from {cells}."
+            if cells < MIN_VALID_PIXELS else
+            f"raster coverage {cover:.1%} is below the {MIN_COVERAGE:.0%} threshold. "
+            "The rasters do not cover enough of this footprint to measure it.")
 
     if floor_count is not None:
         attrs["floor_count"] = floor_count
