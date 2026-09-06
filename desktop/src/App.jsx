@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import PageBoundary from './components/PageBoundary';
 import { Routes, Route, Navigate, useLocation } from "react-router-dom";
 import CreateProjectPage from "./pages/CreateProjectPage";
@@ -15,11 +15,29 @@ import ExportPage from "./pages/ExportPage";
 import HistoryPage from "./pages/HistoryPage";
 import SettingsPage from "./pages/SettingsPage";
 import { CadastreProvider } from "./data/useCadastre";
-import { setProjectPath } from "./data/cadastreApi";
+import { cadastre, projectPath, setProjectPath } from "./data/cadastreApi";
 
 export default function App() {
   const location = useLocation();
   const [selectedProject, setSelectedProject] = useState(null);
+  // 'reopening' until the remembered project has been checked. Rendering the wizard in
+  // the meantime would flash the creation screen at someone who has a project open, and
+  // the wizard is the one screen that can destroy one.
+  const [reopening, setReopening] = useState(Boolean(projectPath()));
+
+  // Reopen the project this window last had. A path is remembered, not a project: the
+  // file can have been moved or deleted since, so the sidecar is asked to open it and a
+  // refusal falls through to the wizard rather than leaving the app pointed at nothing.
+  useEffect(() => {
+    const path = projectPath();
+    if (!path) return;
+    let cancelled = false;
+    cadastre.openProject(path)
+      .then((info) => { if (!cancelled) setSelectedProject({ ...info, location: '' }); })
+      .catch(() => { if (!cancelled) setProjectPath(null); })
+      .finally(() => { if (!cancelled) setReopening(false); });
+    return () => { cancelled = true; };
+  }, []);
   // One operator, no sign-in. Everything from upload through approval to export happens
   // as a single account, so an auth gate in front of it is ceremony with nothing behind
   // it. Who decided what is recorded by the sidecar in `review.decided_by`, not here.
@@ -29,6 +47,15 @@ export default function App() {
   // choose from, because a project this app did not build is one whose numbers came from
   // nowhere — and a dashboard of invented figures that looks authoritative is the exact
   // failure this system exists to prevent.
+  if (reopening) {
+    return (
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        height: '100vh', color: 'var(--text-tertiary)', fontSize: 'var(--text-sm)',
+      }}>Reopening {projectPath().split('/').pop()}…</div>
+    );
+  }
+
   if (!selectedProject) {
     return (
       <PageBoundary><CreateProjectPage
@@ -46,7 +73,7 @@ export default function App() {
   // disagree about whether they are showing the real project.
   return (
     <CadastreProvider>
-    <AppShell project={selectedProject} user={user} onChangeProject={() => setSelectedProject(null)}>
+    <AppShell project={selectedProject} user={user} onChangeProject={() => { setProjectPath(null); setSelectedProject(null); }}>
       {/* Keyed on the path so a failure on one screen clears when you leave it, rather
           than following you to the next. */}
       <PageBoundary key={location.pathname}>

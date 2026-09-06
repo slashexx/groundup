@@ -27,10 +27,34 @@ const BASE = import.meta.env.VITE_CADASTRE_API ?? 'http://127.0.0.1:8000'
  *  It starts empty on purpose. Before a project exists there is nothing to read, and a
  *  default of `pilot.gpkg` would quietly serve the demo fixture to a fresh install — the
  *  screen would look right and belong to somebody else's data. */
-let DB = import.meta.env.VITE_CADASTRE_DB ?? ''
+/** Where the open project is remembered across reloads.
+ *
+ *  Module state alone is lost on every reload, and the app's only entrance was the
+ *  creation wizard - so closing the window meant either finding the project again or
+ *  running the wizard over the file, which is how it came to be overwritten. This is a
+ *  path, not data: the project lives in the GeoPackage, and this only says which one was
+ *  open. A stale path is handled where it is read, by asking the sidecar to open it and
+ *  falling back to the wizard when it refuses. */
+const REMEMBERED = 'cadastre.project_path'
+
+function remembered() {
+  try {
+    return window.localStorage.getItem(REMEMBERED) ?? ''
+  } catch {
+    return ''   // private window, or storage disabled; the wizard is still a way in
+  }
+}
+
+let DB = import.meta.env.VITE_CADASTRE_DB ?? remembered()
 
 export function setProjectPath(path) {
-  DB = path
+  DB = path ?? ''
+  try {
+    if (path) window.localStorage.setItem(REMEMBERED, path)
+    else window.localStorage.removeItem(REMEMBERED)
+  } catch {
+    /* not being able to remember it is not a reason to fail the call that follows */
+  }
 }
 
 export function projectPath() {
@@ -161,6 +185,15 @@ export const cadastre = {
 
   /** Open a project that already exists. Read-only: it reports what the file holds and
    *  refuses one that is not a project, rather than initialising a blank one there. */
+  /** Move many units at once. Every refusal comes back with the guard's own reason:
+   *  a bulk approve reporting only a success count buries the units it could not move,
+   *  and which reason applied is exactly what the reviewer's next action depends on. */
+  transitionAll: (target, actor, unitIds = null, comment = null) =>
+    request('/cadastre/units/transition', {
+      method: 'POST',
+      body: { db_path: DB, target_status: target, actor, comment, unit_ids: unitIds },
+    }),
+
   openProject: (dbPath) =>
     request('/cadastre/project', { params: { db_path: dbPath } }),
 }

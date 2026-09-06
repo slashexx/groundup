@@ -47,6 +47,10 @@ export default function ReviewPage() {
   // queue the moment it is approved: rendering the outcome inside its own row would make
   // the record vanish on click with nothing said about where it went.
   const [outcome, setOutcome] = useState(null);
+  // The result of an approve-all: how many moved, and every reason the rest did not.
+  const [bulk, setBulk] = useState(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [validating, setValidating] = useState(false);
 
   const records = useMemo(
     () => (live && doc ? reviewRows(doc).map(toRecord) : []),
@@ -86,12 +90,67 @@ export default function ReviewPage() {
     }
   };
 
+  /** Run validation, because approval consults it and nothing else here can.
+   *
+   * The guard refuses every unit in an unvalidated project, correctly - an absent run
+   * means "we cannot verify this". But the screen reporting that refusal could not act
+   * on it: validation lives under Check Errors, so "5,971 refused" was a dead end unless
+   * you already knew where to go. A refusal that names its own remedy should offer it.
+   */
+  const handleValidate = async () => {
+    setActionError(null);
+    setValidating(true);
+    try {
+      await cadastre.validate();
+      await reload();
+      setBulk(null);
+    } catch (e) {
+      setActionError(e.message);
+    } finally {
+      setValidating(false);
+    }
+  };
+
+  /** Approve everything currently in the queue.
+   *
+   * Reviewing a ward one unit at a time is data entry, not review: 5,949 units is 5,949
+   * clicks, and a screen that offers no way to finish is one whose only realistic use is
+   * to stop caring. The guard is unchanged - each unit goes through the same transition,
+   * so a unit that could not be approved individually is not approved here either. What
+   * this must never do is report a number and hide the rest, so every refusal comes back
+   * with the reason and is shown.
+   */
+  const handleApproveAll = async () => {
+    setActionError(null);
+    setOutcome(null);
+    setBulk(null);
+    setBulkBusy(true);
+    try {
+      const res = await cadastre.transitionAll('approved', 'reviewer', null, comment || null);
+      setBulk(res);
+      setComment('');
+      await reload();
+    } catch (e) {
+      setActionError(e.message);
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
   return (
     <div className="review-page" style={{ position: 'relative' }}>
       {/* Review List */}
       <div className="review-list">
         <div className="panel-header">
           <span className="panel-title">Review Queue ({records.length})</span>
+          <button className="btn btn-primary btn-sm"
+                  disabled={!live || bulkBusy || records.length === 0}
+                  title={records.length
+                    ? `Attempt approval on all ${records.length} units in the queue`
+                    : 'Nothing is waiting for review'}
+                  onClick={handleApproveAll}>
+            {bulkBusy ? 'Approving…' : `Approve all ${records.length}`}
+          </button>
         </div>
         <DataSourceBanner status={loadStatus} error={loadError} onRetry={reload} />
         <div className="review-list-items">
@@ -133,6 +192,55 @@ export default function ReviewPage() {
 
       {/* Review Detail */}
       <div className="review-detail">
+        {bulk && (
+          <div className="bulk-result">
+            <div className="bulk-result-head">
+              <span className="bulk-result-count">{bulk.approved.toLocaleString()} approved</span>
+              <span className="bulk-result-of">of {bulk.attempted.toLocaleString()} attempted</span>
+            </div>
+            {bulk.approved > 0 && (
+              <div className="bulk-result-note">
+                Each of those has a ULPIN frozen to it permanently. That part is done.
+              </div>
+            )}
+            {bulk.refused > 0 && (
+              <>
+                <div className="bulk-result-refused">
+                  {bulk.refused.toLocaleString()} were refused and are still in the queue.
+                  The guard is the same one the single-unit button uses, so these need
+                  fixing rather than retrying.
+                </div>
+                {Object.entries(bulk.refused_by_reason).slice(0, 8).map(([reason, n]) => (
+                  <div className="bulk-reason" key={reason}>
+                    <span className="bulk-reason-count">{n.toLocaleString()}</span>
+                    <span className="bulk-reason-text">{reason}</span>
+                  </div>
+                ))}
+                {Object.keys(bulk.refused_by_reason).length > 8 && (
+                  <div className="bulk-result-note" style={{ marginTop: 8 }}>
+                    and {Object.keys(bulk.refused_by_reason).length - 8} further causes.
+                  </div>
+                )}
+                {Object.keys(bulk.refused_by_reason).some(r => /no validation/i.test(r)) && (
+                  <div style={{ marginTop: 12 }}>
+                    <button className="btn btn-primary btn-sm" disabled={validating}
+                            onClick={handleValidate}>
+                      {validating ? 'Validating…' : 'Run validation on this project'}
+                    </button>
+                    <div className="bulk-result-note" style={{ marginTop: 8 }}>
+                      Approval reads the latest recorded run. Nothing is approved by
+                      running it — you see the findings first, then approve.
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+            {bulk.refused === 0 && bulk.approved === bulk.attempted && (
+              <div className="bulk-result-note">Nothing was refused. The queue is empty.</div>
+            )}
+          </div>
+        )}
+
         {outcome && (
           <div style={{
             padding: 16, marginBottom: 24, borderRadius: 'var(--radius-md)',
