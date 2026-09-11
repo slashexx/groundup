@@ -562,6 +562,14 @@ function ThreeScene({ selectedBuilding, onSelectBuilding, activeFloor, sceneLaye
   const animFrameRef = useRef(null);
   const selectRef = useRef(onSelectBuilding);
   selectRef.current = onSelectBuilding;
+  // Selecting a building rebuilds the scene, and a rebuild used to re-frame the camera
+  // from scratch - every click threw the operator back to the default view of the whole
+  // ward. The orbit they had is saved across rebuilds and restored, keyed to the extent
+  // so a different project still gets framed fresh.
+  const viewStateRef = useRef(null);
+  // The stitched basemap canvas, kept so a rebuild reuses it instead of refetching
+  // tiles and popping the map in a second time.
+  const drapeCacheRef = useRef(null);
 
   // Nothing to draw is a state this effect has to handle, not a reason to skip the hook.
   // The empty-state return used to sit above these declarations, so the first project to
@@ -573,6 +581,7 @@ function ThreeScene({ selectedBuilding, onSelectBuilding, activeFloor, sceneLaye
     let controls = null;
     let observer = null;
     let onClick = null;
+    let viewKey = null;
 
     async function initScene() {
       if (!drawable) return;
@@ -660,21 +669,31 @@ function ThreeScene({ selectedBuilding, onSelectBuilding, activeFloor, sceneLaye
             const ty0 = Math.floor(lat2t(nLat)), ty1 = Math.floor(lat2t(sLat));
             const cols = tx1 - tx0 + 1, rows = ty1 - ty0 + 1;
             if (cols * rows > 120) return;            // a span that big has no business draped
-            const cvs = document.createElement('canvas');
-            cvs.width = cols * 256; cvs.height = rows * 256;
-            const ctx = cvs.getContext('2d');
-            // the same treatment .basemap-dark applies to the 2D tile pane
-            ctx.filter = 'invert(1) hue-rotate(180deg) brightness(0.85) contrast(0.9) saturate(0.6)';
-            await Promise.all(Array.from({ length: cols * rows }, (_, i) => {
-              const dx = i % cols, dy = Math.floor(i / cols);
-              return new Promise((resolve) => {
-                const img = new Image();
-                img.crossOrigin = 'anonymous';
-                img.onload = () => { ctx.drawImage(img, dx * 256, dy * 256); resolve(); };
-                img.onerror = resolve;                // a missing tile is a dark square, not a failure
-                img.src = `https://tile.openstreetmap.org/${zTile}/${tx0 + dx}/${ty0 + dy}.png`;
-              });
-            }));
+            // The stitched canvas is kept across scene rebuilds: selecting a building
+            // rebuilds the scene, and refetching every tile just to answer a click made
+            // the whole map blink out and pop back in.
+            const drapeKey = `${zTile}/${tx0}/${ty0}/${cols}x${rows}`;
+            let cvs;
+            if (drapeCacheRef.current?.key === drapeKey) {
+              cvs = drapeCacheRef.current.canvas;
+            } else {
+              cvs = document.createElement('canvas');
+              cvs.width = cols * 256; cvs.height = rows * 256;
+              const ctx = cvs.getContext('2d');
+              // the same treatment .basemap-dark applies to the 2D tile pane
+              ctx.filter = 'invert(1) hue-rotate(180deg) brightness(0.85) contrast(0.9) saturate(0.6)';
+              await Promise.all(Array.from({ length: cols * rows }, (_, i) => {
+                const dx = i % cols, dy = Math.floor(i / cols);
+                return new Promise((resolve) => {
+                  const img = new Image();
+                  img.crossOrigin = 'anonymous';
+                  img.onload = () => { ctx.drawImage(img, dx * 256, dy * 256); resolve(); };
+                  img.onerror = resolve;              // a missing tile is a dark square, not a failure
+                  img.src = `https://tile.openstreetmap.org/${zTile}/${tx0 + dx}/${ty0 + dy}.png`;
+                });
+              }));
+              drapeCacheRef.current = { key: drapeKey, canvas: cvs };
+            }
             if (!mounted) return;
             const texture = new THREE.CanvasTexture(cvs);
             texture.colorSpace = THREE.SRGBColorSpace;
@@ -835,6 +854,15 @@ function ThreeScene({ selectedBuilding, onSelectBuilding, activeFloor, sceneLaye
       controls.maxPolarAngle = Math.PI / 2.05;   // never go below the ground plane
       controls.minDistance = 15;
       controls.maxDistance = span * 4;
+      // Restore the orbit the operator had before this rebuild. Selecting a building
+      // rebuilds the scene, and being thrown back to the default framing on every click
+      // makes inspecting neighbours impossible. Keyed to the extent: a different
+      // project is framed fresh rather than shown through the last one's camera.
+      viewKey = `${cx}:${cz}:${span}`;
+      if (viewStateRef.current?.key === viewKey) {
+        camera.position.fromArray(viewStateRef.current.pos);
+        controls.target.fromArray(viewStateRef.current.target);
+      }
       controls.update();
 
       // The HUD has said "Mode: Orbit" since the first mock. Nothing orbited on demand:
@@ -880,6 +908,13 @@ function ThreeScene({ selectedBuilding, onSelectBuilding, activeFloor, sceneLaye
 
     return () => {
       mounted = false;
+      if (controls && cameraRef.current && viewKey) {
+        viewStateRef.current = {
+          key: viewKey,
+          pos: cameraRef.current.position.toArray(),
+          target: controls.target.toArray(),
+        };
+      }
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
       observer?.disconnect();
       controls?.dispose();
