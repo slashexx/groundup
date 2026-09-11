@@ -778,9 +778,16 @@ function ThreeScene({ selectedBuilding, onSelectBuilding, activeFloor, sceneLaye
       const pickable = [];
       for (const u of solid) {
         const shape = new THREE.Shape();
-        u.ringMetres.forEach(([x, y], i) => {
-          const px = x - cx, pz = -(y - cz);
-          if (i === 0) shape.moveTo(px, pz); else shape.lineTo(px, pz);
+        // rotateX(-90°) below maps the shape's own y onto scene -z, so the shape must
+        // carry +northing here, where every line in this scene carries -(northing):
+        // both negations together land the prism on the same ground as its outline.
+        // Built with -(y - cz) like the lines, each prism came out mirrored about the
+        // extent's midline - undetectable over a featureless ground plane, and exactly
+        // the offset the basemap made visible. The ring is walked in reverse so the
+        // reflection does not flip its winding, which is what the extruded walls face by.
+        [...u.ringMetres].reverse().forEach(([x, y], i) => {
+          const px = x - cx, py = y - cz;
+          if (i === 0) shape.moveTo(px, py); else shape.lineTo(px, py);
         });
         const height = Math.max(u.upper_limit - u.lower_limit, 0.05);
         const geom = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false });
