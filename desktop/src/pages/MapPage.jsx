@@ -10,6 +10,7 @@ import { UNIT_TYPE_LABELS } from '../data/cadastreApi';
 // keeps one implementation: the desktop app and the published web build have to agree
 // on where a building is, exactly, and two copies of that maths would drift.
 import { fromP4Document } from '../../../viewer/src/lib/adapter';
+import proj4 from 'proj4';
 
 /** Units from the live document, split for the two Leaflet layers. */
 function useProjectGeometry() {
@@ -19,7 +20,7 @@ function useProjectGeometry() {
                        projectExtent: null, withHeights: 0, typeCounts: {},
                        unitsById: new Map(), sourcesById: new Map(),
                        findingsByUnit: new Map(), parentOf: new Map(),
-                       childrenOf: new Map() };
+                       childrenOf: new Map(), projectProj4: null };
 
     const units = fromP4Document(doc);
     // Leaflet wants [lat, lng]; the adapter returns GeoJSON order.
@@ -105,6 +106,7 @@ function useProjectGeometry() {
       childrenOf,
       withHeights: sceneUnits.filter(
         (u) => u.unit_type !== 'land_parcel' && u.lower_limit != null).length,
+      projectProj4: doc.project?.project_proj4 ?? null,
     };
   }, [doc]);
 }
@@ -551,7 +553,7 @@ function ThreeScene({ selectedBuilding, onSelectBuilding, activeFloor, sceneLaye
   // Read the project here rather than take it as a prop: this is a sibling of the 2D
   // map, not a child of it, and the hook is memoised on the document so both views work
   // from one parse of it.
-  const { sceneUnits, projectExtent, withHeights } = useProjectGeometry();
+  const { sceneUnits, projectExtent, withHeights, projectProj4 } = useProjectGeometry();
 
   const canvasRef = useRef(null);
   const rendererRef = useRef(null);
@@ -629,6 +631,93 @@ function ThreeScene({ selectedBuilding, onSelectBuilding, activeFloor, sceneLaye
       const grid = new THREE.GridHelper(groundSpan, 48, 0x1e293b, 0x161d2d);
       grid.position.y = 0.02;
       scene.add(grid);
+
+      // The basemap, draped onto the ground. The 2D view shows the same tiles through
+      // Leaflet; here they are stitched onto a canvas, dark-filtered exactly as the 2D
+      // pane is, and laid under the scene with every plane vertex reprojected through
+      // the project CRS, so a building stands on the same spot of the same road in both
+      // views. Loaded after the scene starts animating: an unreachable tile server
+      // costs the drape, never the buildings.
+      if (sceneLayers.basemap?.on && projectProj4) {
+        (async () => {
+          try {
+            const toLL = (x, y) => proj4(projectProj4, 'EPSG:4326', [x, y]);
+            const toM = (lon, lat) => proj4('EPSG:4326', projectProj4, [lon, lat]);
+            const half = groundSpan / 2;
+            const [wLon, sLat] = toLL(cx - half, cz - half);
+            const [eLon, nLat] = toLL(cx + half, cz + half);
+            const zTile = 16;
+            const n = 2 ** zTile;
+            const lon2t = (lon) => ((lon + 180) / 360) * n;
+            const lat2t = (lat) => ((1 - Math.log(Math.tan(lat * Math.PI / 180)
+              + 1 / Math.cos(lat * Math.PI / 180)) / Math.PI) / 2) * n;
+            const t2lon = (tx) => (tx / n) * 360 - 180;
+            const t2lat = (ty) => {
+              const g = Math.PI - (2 * Math.PI * ty) / n;
+              return (180 / Math.PI) * Math.atan(0.5 * (Math.exp(g) - Math.exp(-g)));
+            };
+            const tx0 = Math.floor(lon2t(wLon)), tx1 = Math.floor(lon2t(eLon));
+            const ty0 = Math.floor(lat2t(nLat)), ty1 = Math.floor(lat2t(sLat));
+            const cols = tx1 - tx0 + 1, rows = ty1 - ty0 + 1;
+            if (cols * rows > 120) return;            // a span that big has no business draped
+            const cvs = document.createElement('canvas');
+            cvs.width = cols * 256; cvs.height = rows * 256;
+            const ctx = cvs.getContext('2d');
+            // the same treatment .basemap-dark applies to the 2D tile pane
+            ctx.filter = 'invert(1) hue-rotate(180deg) brightness(0.85) contrast(0.9) saturate(0.6)';
+            await Promise.all(Array.from({ length: cols * rows }, (_, i) => {
+              const dx = i % cols, dy = Math.floor(i / cols);
+              return new Promise((resolve) => {
+                const img = new Image();
+                img.crossOrigin = 'anonymous';
+                img.onload = () => { ctx.drawImage(img, dx * 256, dy * 256); resolve(); };
+                img.onerror = resolve;                // a missing tile is a dark square, not a failure
+                img.src = `https://tile.openstreetmap.org/${zTile}/${tx0 + dx}/${ty0 + dy}.png`;
+              });
+            }));
+            if (!mounted) return;
+            const texture = new THREE.CanvasTexture(cvs);
+            texture.colorSpace = THREE.SRGBColorSpace;
+            texture.anisotropy = 4;
+            // Each vertex is reprojected individually: mercator north and grid north
+            // disagree by the meridian convergence, and one flat quad would smear that
+            // disagreement across the whole campus.
+            const SEG = 24;
+            const geo = new THREE.PlaneGeometry(1, 1, SEG, SEG);
+            const pos = geo.attributes.position;
+            for (let i = 0; i < pos.count; i++) {
+              const u = pos.getX(i) + 0.5;            // 0..1 across the canvas
+              const v = 0.5 - pos.getY(i);            // 0..1 down the canvas
+              const [mx, my] = toM(t2lon(tx0 + u * cols), t2lat(ty0 + v * rows));
+              pos.setXYZ(i, mx - cx, 0, -(my - cz));
+            }
+            geo.computeVertexNormals();
+            const drape = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+              map: texture, transparent: true,
+              opacity: sceneLayers.basemap.alpha,
+              depthWrite: false,
+            }));
+            drape.position.y = 0.04;                  // above the ground, below the grid lines
+            drape.renderOrder = -1;
+            scene.add(drape);
+          } catch {
+            /* no drape; the plain ground plane stands */
+          }
+        })();
+      }
+
+      // Footprints as outlines on the ground, the 2D layer's counterpart: the trace of
+      // each building where it meets the earth, visible even under its envelope.
+      if (sceneLayers.footprints?.on) {
+        for (const u of sceneUnits.filter((x) => x.unit_type === 'building')) {
+          const pts = u.ringMetres.map(([x, y]) => new THREE.Vector3(x - cx, 0.08, -(y - cz)));
+          scene.add(new THREE.Line(
+            new THREE.BufferGeometry().setFromPoints(pts),
+            new THREE.LineBasicMaterial({ color: 0x0ea5e9,
+                                          opacity: 0.85 * (sceneLayers.footprints.alpha ?? 1),
+                                          transparent: true })));
+        }
+      }
 
       const TYPE_COLOR = {
         land_parcel: 0x00d4aa,
@@ -888,6 +977,8 @@ export default function MapPage({ project, view = '2d' }) {
     envelopes: { on: drawn('envelopes'), alpha: alpha('envelopes') },
     underground: { on: drawn('underground'), alpha: alpha('underground') },
     elevated: { on: drawn('elevated'), alpha: alpha('elevated') },
+    basemap: { on: drawn('basemap'), alpha: alpha('basemap') },
+    footprints: { on: drawn('footprints'), alpha: alpha('footprints') },
   }), [layerById, typeCounts]);   // `drawn` and `alpha` read only these two
 
   // Held stable so that a re-render — the cursor readout updates ten times a second —

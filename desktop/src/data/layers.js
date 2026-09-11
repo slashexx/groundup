@@ -24,7 +24,7 @@ export const MAP_LAYERS = {
       label: 'OpenStreetMap basemap',
       checked: true,
       opacity: 100,
-      views: ['2d'],
+      views: ['2d', '3d'],
     },
     {
       id: 'parcels',
@@ -41,7 +41,7 @@ export const MAP_LAYERS = {
       label: 'Building footprints',
       checked: true,
       opacity: 80,
-      views: ['2d'],
+      views: ['2d', '3d'],
       unitType: 'building',
     },
     {
