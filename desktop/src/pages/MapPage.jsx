@@ -679,6 +679,12 @@ function ThreeScene({ selectedBuilding, onSelectBuilding, activeFloor, sceneLaye
             const texture = new THREE.CanvasTexture(cvs);
             texture.colorSpace = THREE.SRGBColorSpace;
             texture.anisotropy = 4;
+            // The drape replaces the ground rather than floating just above it. At a
+            // couple of kilometres the depth buffer resolves about half a metre, so two
+            // planes 4 cm apart win pixels at random every frame - a blue shimmer over
+            // the whole map. One plane cannot fight itself.
+            scene.remove(ground);
+            scene.remove(grid);
             // Each vertex is reprojected individually: mercator north and grid north
             // disagree by the meridian convergence, and one flat quad would smear that
             // disagreement across the whole campus.
@@ -693,12 +699,10 @@ function ThreeScene({ selectedBuilding, onSelectBuilding, activeFloor, sceneLaye
             }
             geo.computeVertexNormals();
             const drape = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
-              map: texture, transparent: true,
+              map: texture,
+              transparent: sceneLayers.basemap.alpha < 1,
               opacity: sceneLayers.basemap.alpha,
-              depthWrite: false,
             }));
-            drape.position.y = 0.04;                  // above the ground, below the grid lines
-            drape.renderOrder = -1;
             scene.add(drape);
           } catch {
             /* no drape; the plain ground plane stands */
@@ -710,7 +714,10 @@ function ThreeScene({ selectedBuilding, onSelectBuilding, activeFloor, sceneLaye
       // each building where it meets the earth, visible even under its envelope.
       if (sceneLayers.footprints?.on) {
         for (const u of sceneUnits.filter((x) => x.unit_type === 'building')) {
-          const pts = u.ringMetres.map(([x, y]) => new THREE.Vector3(x - cx, 0.08, -(y - cz)));
+          // A metre of clearance, not centimetres: the depth buffer cannot separate
+          // 8 cm from the drape at this scene's distances, and a line that loses that
+          // fight flickers. A metre is invisible from any orbit height and always wins.
+          const pts = u.ringMetres.map(([x, y]) => new THREE.Vector3(x - cx, 1.0, -(y - cz)));
           scene.add(new THREE.Line(
             new THREE.BufferGeometry().setFromPoints(pts),
             new THREE.LineBasicMaterial({ color: 0x0ea5e9,
@@ -742,7 +749,7 @@ function ThreeScene({ selectedBuilding, onSelectBuilding, activeFloor, sceneLaye
       // Parcels as outlines on the ground, so a building always sits inside something.
       if (shown('land_parcel')) {
         for (const u of sceneUnits.filter((x) => x.unit_type === 'land_parcel')) {
-          const pts = u.ringMetres.map(([x, y]) => new THREE.Vector3(x - cx, 0.06, -(y - cz)));
+          const pts = u.ringMetres.map(([x, y]) => new THREE.Vector3(x - cx, 1.2, -(y - cz)));
           scene.add(new THREE.Line(
             new THREE.BufferGeometry().setFromPoints(pts),
             new THREE.LineBasicMaterial({ color: TYPE_COLOR.land_parcel,
